@@ -1,0 +1,5 @@
+[
+  { "id": "gateway", "name": "5G Internet Gateway", "type": "gateway", "x": 51, "y": 15, "ip": "10.0.0.1", "community": "public" },
+  { "id": "router", "name": "Core Router", "type": "router", "x": 50, "y": 43, "ip": "192.168.88.1", "community": "public" },
+  { "id": "office", "name": "Thessaloniki Office", "type": "server", "x": 82, "y": 46, "ip": "192.168.88.20", "community": "public" }
+]

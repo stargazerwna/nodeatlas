@@ -1,0 +1,7 @@
+node_modules/
+dist/
+dist-electron/
+build/
+nodes.local.json
+links.local.json
+workspace.local.json
