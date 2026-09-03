@@ -48,6 +48,7 @@ let inspectorWidth = 310;
 let inspectorCollapsed = false;
 let resizingPanel = null;
 let resizingCanvas = null;
+let discovery = null;
 const API_URL = '/api/nodes';
 
 const app = document.querySelector('#app');
@@ -101,7 +102,7 @@ function render() {
         <div class="traffic-title"><span>TRAFFIC</span><button>24H ⌄</button></div><div class="chart"><svg viewBox="0 0 280 100" preserveAspectRatio="none"><path d="M0 83 L12 77 L25 80 L38 58 L52 68 L66 42 L79 54 L93 27 L106 46 L120 39 L134 64 L148 45 L161 57 L175 31 L188 43 L202 25 L216 49 L229 40 L242 62 L255 53 L268 72 L280 58 V100 H0Z"></path><polyline points="0,83 12,77 25,80 38,58 52,68 66,42 79,54 93,27 106,46 120,39 134,64 148,45 161,57 175,31 188,43 202,25 216,49 229,40 242,62 255,53 268,72 280,58"></polyline></svg><div class="chart-labels"><span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>NOW</span></div></div>
         <button class="event-button">View device events <span>→</span></button>
       </aside>`}
-      ${linking?.step === 'source' ? renderLinkDialog() : ''}${renderLinkEditor()}${renderContextMenu()}${pingFeedback ? `<div class="ping-feedback">${pingFeedback}</div>` : ''}
+      ${linking?.step === 'source' ? renderLinkDialog() : ''}${renderLinkEditor()}${renderContextMenu()}${renderDiscoveryDialog()}${pingFeedback ? `<div class="ping-feedback">${pingFeedback}</div>` : ''}
     </main>`;
   bindEvents();
   drawLinks();
@@ -131,7 +132,19 @@ async function loadInterfaces(sourceId) {
 
 function renderContextMenu() {
   if (!contextMenu) return '';
-  return `<div class="node-menu" style="left:${contextMenu.x}px;top:${contextMenu.y}px"><button id="open-node-settings">⚙ <span>Settings</span></button><button id="duplicate-node">▣ <span>Duplicate</span></button><button id="ping-node">⌁ <span>Ping ${contextMenu.name}</span></button><hr /><button class="danger" id="delete-node-menu">× <span>Delete device</span></button></div>`;
+  return `<div class="node-menu" style="left:${contextMenu.x}px;top:${contextMenu.y}px"><button id="open-node-settings">⚙ <span>Settings</span></button><button id="duplicate-node">▣ <span>Duplicate</span></button><button id="ping-node">⌁ <span>Ping ${contextMenu.name}</span></button><button id="discover-node">⌕ <span>Discover neighbors</span></button><hr /><button class="danger" id="delete-node-menu">× <span>Delete device</span></button></div>`;
+}
+
+function renderDiscoveryDialog() {
+  if (!discovery) return '';
+  const body = discovery.loading
+    ? '<p class="discovery-status">Scanning for neighbors…</p>'
+    : discovery.error
+      ? `<p class="discovery-status error">${discovery.error}</p>`
+      : discovery.candidates.length === 0
+        ? '<p class="discovery-status">No neighbors found. Make sure LLDP/CDP or MikroTik neighbor discovery is enabled on the device.</p>'
+        : `<ul class="discovery-list">${discovery.candidates.map((candidate, index) => `<li><label><input type="checkbox" data-index="${index}" ${candidate.remoteIp ? '' : 'disabled'} /><span class="discovery-info"><strong>${candidate.remoteName || candidate.remoteIp || 'Unknown device'}</strong><small>${candidate.protocol}${candidate.remoteIp ? ` · ${candidate.remoteIp}` : ' · no IP reported'}${candidate.remotePlatform ? ` · ${candidate.remotePlatform}` : ''}</small></span></label></li>`).join('')}</ul>`;
+  return `<div class="link-dialog"><form id="discovery-form"><h2>Discover neighbors of ${discovery.sourceName}</h2>${body}<button class="primary-btn" type="submit" ${discovery.loading || discovery.error || !discovery.candidates?.length ? 'disabled' : ''}>Add selected devices</button><button class="cancel-link" type="button" id="cancel-discovery">Close</button></form></div>`;
 }
 
 function renderSiteSwitcher() {
@@ -263,6 +276,53 @@ function bindEvents() {
       selectedId = nodes[0]?.id || '';
     } else pingFeedback = `Could not delete ${node.name}.`;
     render();
+  });
+  const discoverButton = document.querySelector('#discover-node');
+  if (discoverButton) discoverButton.addEventListener('click', async () => {
+    const node = contextMenu;
+    contextMenu = null;
+    discovery = { sourceId: node.id, sourceName: node.name, candidates: [], loading: true, error: '' };
+    render();
+    try {
+      const result = await fetch(`${API_URL}/${node.id}/discover-neighbors`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ protocol: 'all' }) }).then((response) => response.ok ? response.json() : Promise.reject(response));
+      discovery = { ...discovery, loading: false, candidates: result.candidates };
+    } catch {
+      discovery = { ...discovery, loading: false, error: `Could not discover neighbors of ${node.name}. Check the monitoring service.` };
+    }
+    render();
+  });
+  const cancelDiscovery = document.querySelector('#cancel-discovery');
+  if (cancelDiscovery) cancelDiscovery.addEventListener('click', () => { discovery = null; render(); });
+  const discoveryForm = document.querySelector('#discovery-form');
+  if (discoveryForm) discoveryForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const source = nodes.find((item) => item.id === discovery.sourceId);
+    const chosen = [...discoveryForm.querySelectorAll('input[type="checkbox"]:checked')].map((input) => discovery.candidates[Number(input.dataset.index)]);
+    if (!source || !chosen.length) { discovery = null; render(); return; }
+    let created = 0;
+    for (const [index, candidate] of chosen.entries()) {
+      const device = {
+        id: `neighbor-${Date.now()}-${index}`,
+        name: candidate.remoteName || candidate.remoteIp,
+        type: 'device',
+        ip: candidate.remoteIp,
+        x: Math.min(94, Math.max(6, (source.x || 50) + (index % 2 === 0 ? 8 : -8))),
+        y: Math.min(91, Math.max(6, (source.y || 50) + 10 + index * 6)),
+      };
+      try {
+        const saved = await fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(device) }).then((response) => response.ok ? response.json() : Promise.reject());
+        nodes.push(saved);
+        created += 1;
+        const link = await fetch('/api/links', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sourceId: source.id, targetId: saved.id, interfaceIndex: candidate.localInterfaceIndex || 1 }) }).then((response) => response.ok ? response.json() : null);
+        if (link) links.push(link);
+      } catch {
+        // Skip devices that failed to save (e.g. duplicate IP) and continue with the rest.
+      }
+    }
+    pingFeedback = created ? `Added ${created} discovered device${created === 1 ? '' : 's'}.` : 'Could not add the selected devices.';
+    discovery = null;
+    render();
+    setTimeout(() => { pingFeedback = ''; render(); }, 4000);
   });
   window.addEventListener('pointermove', moveNode);
   window.addEventListener('pointerup', () => {
