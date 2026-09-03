@@ -3,13 +3,19 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import snmp from 'net-snmp';
 
+// Resolve defaults relative to this file's own directory, not process.cwd() (which can be
+// a temp extraction folder for packaged/portable builds and would otherwise break lookups).
+const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3001);
-const CONFIG_PATH = process.env.NODES_CONFIG || './nodes.local.json';
-const SAMPLE_CONFIG_PATH = './nodes.example.json';
-const LINKS_PATH = process.env.LINKS_CONFIG || './links.local.json';
-const WORKSPACE_PATH = process.env.WORKSPACE_CONFIG || './workspace.local.json';
+const CONFIG_PATH = process.env.NODES_CONFIG || path.join(moduleDir, 'nodes.local.json');
+const SAMPLE_CONFIG_PATH = process.env.NODES_SAMPLE_CONFIG || path.join(moduleDir, 'nodes.example.json');
+const LINKS_PATH = process.env.LINKS_CONFIG || path.join(moduleDir, 'links.local.json');
+const SAMPLE_LINKS_PATH = process.env.LINKS_SAMPLE_CONFIG || path.join(moduleDir, 'links.example.json');
+const WORKSPACE_PATH = process.env.WORKSPACE_CONFIG || path.join(moduleDir, 'workspace.local.json');
 const OIDS = [
   '1.3.6.1.2.1.1.1.0', // sysDescr
   '1.3.6.1.2.1.1.5.0', // sysName
@@ -35,11 +41,12 @@ async function loadNodes() {
 }
 
 async function loadLinks() {
-  return existsSync(LINKS_PATH) ? JSON.parse(await readFile(LINKS_PATH, 'utf8')) : [];
+  if (existsSync(LINKS_PATH)) return JSON.parse(await readFile(LINKS_PATH, 'utf8'));
+  return existsSync(SAMPLE_LINKS_PATH) ? JSON.parse(await readFile(SAMPLE_LINKS_PATH, 'utf8')) : [];
 }
 
 async function loadWorkspace() {
-  return existsSync(WORKSPACE_PATH) ? JSON.parse(await readFile(WORKSPACE_PATH, 'utf8')) : { name: 'NIKITI SITE' };
+  return existsSync(WORKSPACE_PATH) ? JSON.parse(await readFile(WORKSPACE_PATH, 'utf8')) : { name: 'myWorkspace' };
 }
 
 function formatUptime(ticks) {
@@ -294,4 +301,15 @@ const server = http.createServer(async (request, response) => {
   send(response, 404, { error: 'Not found' });
 });
 
-server.listen(PORT, () => console.log(`SNMP monitor API listening on http://127.0.0.1:${PORT}`));
+server.on('error', (error) => {
+  if (error.code === 'EADDRINUSE') {
+    console.error(`Port ${PORT} is already in use. Another instance of the monitor may already be running.`);
+  } else {
+    console.error('SNMP monitor API failed to start:', error);
+  }
+});
+
+await new Promise((resolve, reject) => {
+  server.once('error', reject);
+  server.listen(PORT, () => { console.log(`SNMP monitor API listening on http://127.0.0.1:${PORT}`); resolve(); });
+});

@@ -7,17 +7,35 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, '..');
 const iconPath = path.join(rootDir, 'build', 'icon.png');
-const HOMEPAGE = 'https://wna.gr/netatlas';
+const HOMEPAGE = 'https://wna.gr/nodeatlas';
 const COPYRIGHT = 'Copyright \u00A9 2026 Leonidas Papadopoulos';
+// The desktop app defaults to its own port so it can run alongside the web app (which stays on 3001).
+const API_PORT = Number(process.env.NODEATLAS_PORT || 3030);
+process.env.PORT = String(API_PORT);
 
 let mainWindow;
 let backendStarted = false;
 
+function showFatalError(title, error) {
+  console.error(title, error);
+  dialog.showErrorBox(title, error?.message || String(error));
+}
+
+process.on('uncaughtException', (error) => {
+  showFatalError('NodeAtlas encountered an unexpected error', error);
+  app.quit();
+});
+
+process.on('unhandledRejection', (error) => {
+  showFatalError('NodeAtlas encountered an unexpected error', error);
+  app.quit();
+});
+
 function showAboutDialog() {
   dialog.showMessageBox(mainWindow, {
     type: 'info',
-    title: 'About Network Atlas',
-    message: 'Network Atlas',
+    title: 'About NodeAtlas',
+    message: 'NodeAtlas',
     detail: `Version ${app.getVersion()}\n${COPYRIGHT}\n${HOMEPAGE}`,
     buttons: ['OK'],
   });
@@ -25,7 +43,7 @@ function showAboutDialog() {
 
 function buildMenu() {
   app.setAboutPanelOptions({
-    applicationName: 'Network Atlas',
+    applicationName: 'NodeAtlas',
     applicationVersion: app.getVersion(),
     copyright: COPYRIGHT,
     website: HOMEPAGE,
@@ -34,7 +52,7 @@ function buildMenu() {
   const template = [
     ...(process.platform === 'darwin' ? [{
       label: app.name,
-      submenu: [{ label: 'About Network Atlas', click: showAboutDialog }, { type: 'separator' }, { role: 'quit' }],
+      submenu: [{ label: 'About NodeAtlas', click: showAboutDialog }, { type: 'separator' }, { role: 'quit' }],
     }] : []),
     { role: 'fileMenu' },
     { role: 'editMenu' },
@@ -43,9 +61,9 @@ function buildMenu() {
     {
       role: 'help',
       submenu: [
-        { label: 'Visit netatlas.wna.gr', click: () => shell.openExternal(HOMEPAGE) },
+        { label: 'Visit nodeatlas.wna.gr', click: () => shell.openExternal(HOMEPAGE) },
         { type: 'separator' },
-        { label: 'About Network Atlas', click: showAboutDialog },
+        { label: 'About NodeAtlas', click: showAboutDialog },
       ],
     },
   ];
@@ -57,13 +75,30 @@ async function startBackend() {
   if (backendStarted) return;
   backendStarted = true;
 
+  // app.asar is read-only, so packaged builds must keep their editable config outside it.
+  // Portable copies store data next to their own exe (via electron-builder's
+  // PORTABLE_EXECUTABLE_DIR) so each copy stays independent; installed builds fall back
+  // to the per-user profile since there is no portable folder to use.
+  if (app.isPackaged) {
+    const dataDir = process.env.PORTABLE_EXECUTABLE_DIR
+      ? path.join(process.env.PORTABLE_EXECUTABLE_DIR, 'data')
+      : app.getPath('userData');
+    fs.mkdirSync(dataDir, { recursive: true });
+    process.env.NODES_CONFIG ||= path.join(dataDir, 'nodes.local.json');
+    process.env.LINKS_CONFIG ||= path.join(dataDir, 'links.local.json');
+    process.env.WORKSPACE_CONFIG ||= path.join(dataDir, 'workspace.local.json');
+  }
+
   const serverPath = path.join(rootDir, 'server.js');
 
   try {
     await import(pathToFileURL(serverPath).href);
   } catch (error) {
-    console.error('Failed to start the SNMP backend inside Electron:', error);
+    showFatalError('NodeAtlas could not start its monitoring service', error.code === 'EADDRINUSE'
+      ? new Error(`Port ${API_PORT} is already in use. Close any other running copy of NodeAtlas and try again.`)
+      : error);
     app.quit();
+    throw error;
   }
 }
 
@@ -73,7 +108,7 @@ function createWindow() {
     height: 980,
     minWidth: 1200,
     minHeight: 780,
-    title: 'Network Atlas',
+    title: 'NodeAtlas',
     icon: fs.existsSync(iconPath) ? iconPath : undefined,
     webPreferences: {
       contextIsolation: false,
@@ -81,14 +116,23 @@ function createWindow() {
     },
   });
 
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
+    if (errorCode === -3) return; // Ignore aborted loads caused by normal navigation.
+    showFatalError('NodeAtlas failed to load its interface', new Error(`${errorDescription} (${errorCode})`));
+  });
+
+  mainWindow.on('unresponsive', () => {
+    dialog.showMessageBox(mainWindow, { type: 'warning', title: 'NodeAtlas', message: 'NodeAtlas is not responding.' });
+  });
+
   const indexPath = path.join(rootDir, 'dist', 'index.html');
 
   if (fs.existsSync(indexPath)) {
-    mainWindow.loadFile(indexPath);
+    mainWindow.loadFile(indexPath, { query: { apiPort: String(API_PORT) } });
     return;
   }
 
-  mainWindow.loadURL('http://127.0.0.1:5173');
+  mainWindow.loadURL(`http://127.0.0.1:5173?apiPort=${API_PORT}`);
 
   mainWindow.on('closed', () => {
     mainWindow = null;
@@ -97,12 +141,19 @@ function createWindow() {
 
 app.whenReady().then(async () => {
   buildMenu();
-  await startBackend();
+  try {
+    await startBackend();
+  } catch {
+    return; // startBackend already reported the error and is quitting the app.
+  }
   createWindow();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+}).catch((error) => {
+  showFatalError('NodeAtlas failed to start', error);
+  app.quit();
 });
 
 app.on('window-all-closed', () => {

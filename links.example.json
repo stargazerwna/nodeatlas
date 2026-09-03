@@ -1,0 +1,4 @@
+[
+  { "id": "link-sample-1", "sourceId": "mikrotik", "targetId": "accesspoint", "interfaceIndex": 1, "interfaceIp": "" },
+  { "id": "link-sample-2", "sourceId": "accesspoint", "targetId": "dvr", "interfaceIndex": 1, "interfaceIp": "" }
+]

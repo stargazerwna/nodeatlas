@@ -5,3 +5,5 @@ build/
 nodes.local.json
 links.local.json
 workspace.local.json
+*.log
+*.err

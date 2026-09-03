@@ -1,5 +1,14 @@
 import './style.css';
 
+// In the packaged desktop app the backend runs on its own port (see electron/main.js);
+// the web app keeps hitting same-origin/proxied "/api" paths as before.
+const apiPort = new URLSearchParams(window.location.search).get('apiPort');
+if (apiPort) {
+  const apiBase = `http://127.0.0.1:${apiPort}`;
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = (input, init) => (typeof input === 'string' && input.startsWith('/api') ? nativeFetch(apiBase + input, init) : nativeFetch(input, init));
+}
+
 const nodeTypes = {
   router: { icon: '◆', label: 'Router', className: 'router' },
   gateway: { icon: '↗', label: 'Gateway', className: 'gateway' },
@@ -52,7 +61,7 @@ function render() {
   const formValues = settingsDraft?.id === selected.id ? settingsDraft : selected;
   app.innerHTML = `
     <header class="topbar">
-      <a class="brand" href="#"><span class="brand-mark">N</span><span>network<span>atlas</span></span></a>
+      <a class="brand" href="#"><span class="brand-mark">N</span><span>node<span>atlas</span></span></a>
       ${renderSiteSwitcher()}
       <div class="top-actions"><span class="live"><i></i> LIVE</span><button class="icon-button" title="Notifications">♧<b>2</b></button><button class="avatar" title="Account">SA</button></div>
     </header>

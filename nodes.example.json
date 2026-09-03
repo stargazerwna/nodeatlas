@@ -1,5 +1,5 @@
 [
-  { "id": "gateway", "name": "5G Internet Gateway", "type": "gateway", "x": 51, "y": 15, "ip": "10.0.0.1", "community": "public" },
-  { "id": "router", "name": "Core Router", "type": "router", "x": 50, "y": 43, "ip": "192.168.88.1", "community": "public" },
-  { "id": "office", "name": "Thessaloniki Office", "type": "server", "x": 82, "y": 46, "ip": "192.168.88.20", "community": "public" }
+  { "id": "mikrotik", "name": "MikroTik Router", "type": "router", "platform": "mikrotik", "x": 30, "y": 45, "ip": "192.168.88.1", "community": "public" },
+  { "id": "accesspoint", "name": "OpenWRT Access Point", "type": "router", "platform": "openwrt", "x": 58, "y": 45, "ip": "192.168.1.1", "community": "public" },
+  { "id": "dvr", "name": "DVR", "type": "camera", "x": 84, "y": 45, "ip": "192.168.1.10", "community": "public" }
 ]

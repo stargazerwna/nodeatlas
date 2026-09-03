@@ -1,4 +1,4 @@
-# Network Atlas
+# NodeAtlas
 
 ## Run
 

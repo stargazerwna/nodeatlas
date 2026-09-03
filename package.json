@@ -1,6 +1,6 @@
 {
   "name": "netmonitor",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "main": "electron/main.js",
@@ -21,8 +21,8 @@
     "vite": "^7.0.0"
   },
   "build": {
-    "appId": "com.netmonitor.networkatlas",
-    "productName": "Network Atlas",
+    "appId": "com.netmonitor.nodeatlas",
+    "productName": "NodeAtlas",
     "icon": "build/icon.png",
     "directories": {
       "output": "dist-electron"
@@ -33,6 +33,7 @@
       "server.js",
       "nodes.example.json",
       "nodes.local.json",
+      "links.example.json",
       "links.local.json",
       "workspace.local.json",
       "electron/**/*",
@@ -42,10 +43,10 @@
       "target": [
         "portable"
       ],
-      "artifactName": "NetworkAtlas-${version}-portable.exe"
+      "artifactName": "NodeAtlas-${version}-portable.exe"
     }
   },
-  "description": "Network Atlas desktop monitoring app",
+  "description": "NodeAtlas desktop monitoring app",
   "author": {
     "name": "NetMonitor",
     "email": "support@example.com"
