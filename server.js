@@ -133,8 +133,8 @@ async function discoverSnmpNeighbors(node, protocol) {
   const candidates = [];
   if (protocol === 'lldp' || protocol === 'all') {
     const base = '1.0.8802.1.1.2.1.4.1.1';
-    const [names, descriptions, ports, addresses] = await Promise.all([
-      walkSnmp(node, `${base}.9`), walkSnmp(node, `${base}.10`), walkSnmp(node, `${base}.8`), walkSnmp(node, `${base}.13`),
+    const [names, descriptions, ports] = await Promise.all([
+      walkSnmp(node, `${base}.9`), walkSnmp(node, `${base}.10`), walkSnmp(node, `${base}.8`),
     ]);
     const byKey = new Map();
     names.forEach((item) => {
@@ -143,7 +143,15 @@ async function discoverSnmpNeighbors(node, protocol) {
     });
     descriptions.forEach((item) => { const key = oidSuffix(item.oid, `${base}.10`).slice(0, -1).join('.'); if (byKey.has(key)) byKey.get(key).remotePlatform = valueText(item.value); });
     ports.forEach((item) => { const key = oidSuffix(item.oid, `${base}.8`).slice(0, -1).join('.'); if (byKey.has(key)) byKey.get(key).remotePort = valueText(item.value); });
-    addresses.forEach((item) => { const suffix = oidSuffix(item.oid, `${base}.13`); const key = suffix.slice(0, -2).join('.'); if (byKey.has(key)) byKey.get(key).remoteIp = valueIp(item.value); });
+    // Remote management addresses live in a separate table (lldpRemManAddrTable) whose index
+    // embeds the address bytes directly, rather than in a plain value column.
+    const addrBase = '1.0.8802.1.1.2.1.4.2.1.3';
+    (await walkSnmp(node, addrBase)).forEach((item) => {
+      const suffix = oidSuffix(item.oid, addrBase); // timeMark, localPort, remIndex, addrSubtype, addrLen, ...addrBytes
+      const key = suffix.slice(0, 2).join('.');
+      const [, , , addrSubtype, addrLen] = suffix;
+      if (addrSubtype === 1 && addrLen === 4 && byKey.has(key)) byKey.get(key).remoteIp = suffix.slice(5, 9).join('.');
+    });
     candidates.push(...byKey.values());
   }
   if (protocol === 'cdp' || protocol === 'all') {
