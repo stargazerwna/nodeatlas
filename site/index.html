@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="description" content="NodeAtlas — a lightweight SNMP network topology monitor for MikroTik, OpenWRT, and standard SNMP devices. Desktop app and self-hosted web UI." />
+<title>NodeAtlas — Live network topology monitoring</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+  :root { --ink:#111820; --muted:#7e8b96; --line:#e4e8e9; --panel:#fff; --canvas:#f7f9f8; --green:#37b878; --red:#df5552; --amber:#e5a541; --teal:#1d8d91; --dark:#111820; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:'Space Grotesk',sans-serif; color:var(--ink); background:var(--canvas); }
+  a { color:inherit; }
+  .topbar { height:64px; background:#111820; color:white; display:flex; align-items:center; padding:0 22px; gap:14px; }
+  .brand { color:white; text-decoration:none; font-weight:700; font-size:17px; display:flex; gap:9px; align-items:center; }
+  .brand span span { color:#66d797; }
+  .brand-mark { background:#45c880; color:#112019; width:25px; height:25px; display:grid; place-items:center; font-size:13px; clip-path:polygon(50% 0,95% 25%,95% 75%,50% 100%,5% 75%,5% 25%); }
+  .nav-links { margin-left:auto; display:flex; gap:22px; font:12px 'DM Mono',monospace; letter-spacing:.05em; color:#cbd2d5; }
+  .nav-links a { text-decoration:none; }
+  .nav-links a:hover { color:#66d797; }
+  .cta { border:1px solid #178b57; background:#248f5d; color:white; border-radius:4px; padding:8px 14px; font:12px 'DM Mono',monospace; text-decoration:none; }
+
+  .hero { max-width:1100px; margin:0 auto; padding:76px 24px 50px; display:grid; grid-template-columns:1fr 1fr; gap:40px; align-items:center; }
+  .hero h1 { font-size:40px; line-height:1.15; margin:0 0 16px; letter-spacing:-.01em; }
+  .hero h1 span { color:#248f5d; }
+  .hero p { color:#5c6a71; font-size:15px; line-height:1.6; margin:0 0 26px; max-width:46ch; }
+  .hero-actions { display:flex; gap:12px; flex-wrap:wrap; }
+  .btn { display:inline-flex; align-items:center; gap:8px; border-radius:5px; padding:11px 18px; font:13px 'DM Mono',monospace; text-decoration:none; }
+  .btn-primary { background:#178b57; color:#fff; }
+  .btn-primary:hover { background:#136e46; }
+  .btn-ghost { border:1px solid #d3dbd7; color:#354048; }
+  .btn-ghost:hover { border-color:#178b57; color:#178b57; }
+  .badges { display:flex; gap:16px; margin-top:26px; color:#8b969c; font:11px 'DM Mono',monospace; letter-spacing:.06em; }
+
+  /* Mock topology canvas, styled like the real app */
+  .mock-canvas { position:relative; height:340px; border:1px solid #e7ecea; border-radius:8px; background:radial-gradient(circle at 50% 40%,#fcfefd 0,#f7faf8 65%,#f3f7f4 100%),linear-gradient(90deg,#e9efec 1px,transparent 1px),linear-gradient(#e9efec 1px,transparent 1px); background-size:auto,26px 26px,26px 26px; box-shadow:0 12px 30px #11182014; overflow:hidden; }
+  .mock-canvas svg { position:absolute; inset:0; width:100%; height:100%; }
+  .mock-canvas svg line { stroke:#8fa49a; stroke-width:1.5; stroke-dasharray:5 4; }
+  .mock-canvas svg text { font:9px 'DM Mono',monospace; fill:#53616b; text-anchor:middle; }
+  .mock-node { position:absolute; transform:translate(-50%,-50%); min-width:150px; padding:8px 9px; display:flex; align-items:center; gap:9px; background:#fff; border:1px solid #dce5e0; border-radius:5px; box-shadow:0 3px 10px #35453b12; }
+  .mock-node strong { display:block; font-size:12px; }
+  .mock-node small { display:block; color:#7e8b96; font:10px 'DM Mono',monospace; }
+  .mock-icon { flex:0 0 28px; height:28px; border-radius:5px; display:grid; place-items:center; color:#fff; font-size:14px; }
+  .mock-icon.router { background:#247f83; } .mock-icon.device { background:#639c71; } .mock-icon.camera { background:#bd7b45; }
+  .status-dot { display:inline-block; width:6px; height:6px; border-radius:50%; background:var(--green); margin-right:5px; }
+
+  section.strip { max-width:1100px; margin:0 auto; padding:10px 24px 60px; }
+  .section-label { font:10px 'DM Mono',monospace; letter-spacing:.14em; color:#8b969c; margin:0 0 10px; }
+  .section-title { font-size:26px; margin:0 0 34px; letter-spacing:-.01em; }
+  .grid-3 { display:grid; grid-template-columns:repeat(3,1fr); gap:20px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:8px; padding:22px; }
+  .card .icon { width:34px; height:34px; border-radius:6px; display:grid; place-items:center; color:#fff; font-size:16px; margin-bottom:14px; }
+  .card h3 { margin:0 0 8px; font-size:15px; }
+  .card p { margin:0; color:#68757c; font-size:13px; line-height:1.55; }
+
+  .roadmap { background:#111820; color:#e7ecec; }
+  .roadmap .section-title { color:#fff; }
+  .roadmap .section-label { color:#7e8b96; }
+  .timeline { display:grid; grid-template-columns:repeat(4,1fr); gap:18px; }
+  .stop { border:1px solid #2a343b; border-radius:8px; padding:20px; background:#161f27; }
+  .stop .ver { font:11px 'DM Mono',monospace; color:#66d797; letter-spacing:.06em; margin-bottom:10px; display:inline-block; }
+  .stop.now .ver { color:#e5a541; }
+  .stop h4 { margin:0 0 10px; font-size:14px; }
+  .stop ul { margin:0; padding-left:16px; color:#b7c3c6; font-size:12.5px; line-height:1.7; }
+
+  .cta-band { text-align:center; padding:70px 24px; }
+  .cta-band h2 { font-size:26px; margin:0 0 12px; }
+  .cta-band p { color:#68757c; margin:0 0 26px; }
+
+  footer { border-top:1px solid var(--line); padding:26px 24px; text-align:center; color:#8b969c; font:11px 'DM Mono',monospace; }
+  footer a { text-decoration:none; color:#68757c; }
+  footer a:hover { color:#178b57; }
+
+  @media (max-width:880px) {
+    .hero { grid-template-columns:1fr; padding-top:46px; }
+    .grid-3, .timeline { grid-template-columns:1fr; }
+    .nav-links { display:none; }
+  }
+</style>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#"><span class="brand-mark">N</span><span>node<span>atlas</span></span></a>
+    <nav class="nav-links">
+      <a href="#features">Features</a>
+      <a href="#roadmap">Roadmap</a>
+      <a href="https://github.com/stargazerwna/netmonitor">GitHub</a>
+    </nav>
+    <a class="cta" href="https://github.com/stargazerwna/netmonitor/releases/latest">Download</a>
+  </header>
+
+  <section class="hero">
+    <div>
+      <p class="section-label">SNMP TOPOLOGY MONITOR</p>
+      <h1>See your whole network as <span>one living map</span></h1>
+      <p>NodeAtlas polls MikroTik, OpenWRT, and standard SNMP devices in real time and draws the results as a live, drag-and-drop topology — uptime, traffic, CPU, and memory at a glance, with no database or cloud account required.</p>
+      <div class="hero-actions">
+        <a class="btn btn-primary" href="https://github.com/stargazerwna/netmonitor/releases/latest">⬇ Download for Windows</a>
+        <a class="btn btn-ghost" href="https://github.com/stargazerwna/netmonitor">View source on GitHub</a>
+      </div>
+      <div class="badges"><span>◆ FREE &amp; OPEN SOURCE</span><span>◇ NO CLOUD REQUIRED</span><span>▣ RUNS LOCALLY</span></div>
+    </div>
+    <div class="mock-canvas">
+      <svg aria-hidden="true">
+        <line x1="50%" y1="20%" x2="28%" y2="68%" />
+        <line x1="50%" y1="20%" x2="72%" y2="68%" />
+        <text x="39%" y="46%">RX 12.4 Mbps</text>
+        <text x="61%" y="46%">RX 6.2 Mbps</text>
+      </svg>
+      <div class="mock-node" style="left:50%;top:20%"><span class="mock-icon router">◆</span><span><strong>MikroTik Router</strong><small><span class="status-dot"></span>192.168.88.1</small></span></div>
+      <div class="mock-node" style="left:28%;top:68%"><span class="mock-icon router">◆</span><span><strong>OpenWRT Access Point</strong><small><span class="status-dot"></span>192.168.1.1</small></span></div>
+      <div class="mock-node" style="left:72%;top:68%"><span class="mock-icon camera">◉</span><span><strong>DVR</strong><small><span class="status-dot"></span>192.168.1.10</small></span></div>
+    </div>
+  </section>
+
+  <section class="strip" id="features">
+    <p class="section-label">WHY NODEATLAS</p>
+    <h2 class="section-title">Built for people who actually watch the network</h2>
+    <div class="grid-3">
+      <div class="card"><div class="icon" style="background:#247f83">◆</div><h3>Live topology canvas</h3><p>Drag devices into place, connect them by interface, and watch link traffic and device health update every second.</p></div>
+      <div class="card"><div class="icon" style="background:#4f8dca">↗</div><h3>MikroTik &amp; OpenWRT aware</h3><p>Recognizes RouterOS and OpenWrt sysDescr strings automatically and surfaces platform version, CPU, and memory.</p></div>
+      <div class="card"><div class="icon" style="background:#bd7b45">◉</div><h3>Ping fallback</h3><p>When SNMP is unreachable, a right-click ping tells you instantly whether a device is merely quiet or actually down.</p></div>
+      <div class="card"><div class="icon" style="background:#639c71">⧉</div><h3>Workspace export/import</h3><p>Rename, export, and import your whole topology as a single JSON file — easy to back up or hand to a teammate.</p></div>
+      <div class="card"><div class="icon" style="background:#6d669d">▣</div><h3>Zero dependencies to run</h3><p>A single local JSON file stores your topology — no database, no account, no cloud service required.</p></div>
+      <div class="card"><div class="icon" style="background:#1d8d91">⬇</div><h3>Desktop or self-hosted</h3><p>Ship it as a portable Windows app for a technician's laptop, or run the same code as a small self-hosted web service.</p></div>
+    </div>
+  </section>
+
+  <section class="roadmap" id="roadmap">
+    <div class="strip">
+      <p class="section-label">WHAT'S NEXT</p>
+      <h2 class="section-title">Roadmap</h2>
+      <div class="timeline">
+        <div class="stop now"><span class="ver">v1.1 — current</span><h4>Solid foundation</h4><ul><li>Live topology canvas &amp; link traffic</li><li>Workspace rename / export / import</li><li>Portable desktop app (isolated per copy)</li><li>Sample topology for new users</li></ul></div>
+        <div class="stop"><span class="ver">v1.2</span><h4>Visibility &amp; alerts</h4><ul><li>Desktop notifications when a device goes down</li><li>SNMPv3 authentication &amp; encryption</li><li>Light/dark theme toggle</li></ul></div>
+        <div class="stop"><span class="ver">v1.3</span><h4>History &amp; reporting</h4><ul><li>Historical uptime/traffic charts</li><li>Multiple sites in one workspace switcher</li><li>Exportable PDF/CSV reports</li></ul></div>
+        <div class="stop"><span class="ver">v2.0</span><h4>Team &amp; scale</h4><ul><li>macOS &amp; Linux builds with auto-update</li><li>Multi-user accounts &amp; permissions</li><li>Optional cloud sync of workspaces</li></ul></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="cta-band">
+    <h2>Map your network in minutes</h2>
+    <p>No signup, no cloud, no lock-in — just point it at your devices.</p>
+    <a class="btn btn-primary" href="https://github.com/stargazerwna/netmonitor/releases/latest">⬇ Download NodeAtlas</a>
+  </section>
+
+  <footer>
+    Copyright © 2026 Leonidas Papadopoulos · <a href="https://github.com/stargazerwna/netmonitor">GitHub</a> · <a href="https://wna.gr/nodeatlas">wna.gr/nodeatlas</a>
+  </footer>
+</body>
+</html>
