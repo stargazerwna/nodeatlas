@@ -41,6 +41,7 @@ let workspaceName = 'myWorkspace';
 let workspaceMenuOpen = false;
 let editingWorkspaceName = false;
 let workspaceFeedback = '';
+let zoom = 1;
 const API_URL = '/api/nodes';
 
 const app = document.querySelector('#app');
@@ -70,10 +71,10 @@ function render() {
       <section class="content">
         <div class="canvas-toolbar"><div><h1>Site topology</h1><p>Live infrastructure overview <span>Updated just now</span></p></div><div class="toolbar-actions"><button class="outline-btn" id="fit-map">⊙</button><button class="outline-btn ${linking ? 'selected-tool' : ''}" id="connect-mode">⌁ <span>${linking ? 'Select target' : 'Connect'}</span></button><button class="primary-btn" id="add-device">＋ <span>Device</span></button></div></div>
         <div class="canvas-wrap" id="canvas-wrap">
-          <div class="canvas" id="canvas">
+          <div class="canvas" id="canvas" style="transform:scale(${zoom})">
             <svg class="links" id="links" aria-hidden="true"></svg>
             ${nodes.map((node) => renderNode(node)).join('')}
-            <div class="canvas-hint"><kbd>⌘</kbd> + scroll to zoom <span>·</span> Drag components to arrange</div>
+            <div class="canvas-hint">Scroll to zoom <span>·</span> Drag components to arrange</div>
           </div>
         </div>
       </section>
@@ -259,7 +260,12 @@ function bindEvents() {
     const device = { id: `device-${Date.now()}`, name: 'New Device', type: 'device', x: 50, y: 55, status: 'healthy', ip: '192.168.88.200', uptime: '100%', rx: 0, tx: 0 };
     nodes.push(device); selectedId = device.id; fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(device) }).catch(() => {}); render();
   });
-  document.querySelector('#fit-map').addEventListener('click', () => { nodes = nodes.map((node) => ({ ...node })); render(); });
+  document.querySelector('#fit-map').addEventListener('click', () => { zoom = 1; render(); });
+  document.querySelector('#canvas-wrap').addEventListener('wheel', (event) => {
+    event.preventDefault();
+    zoom = Math.min(2.5, Math.max(0.5, +(zoom + (event.deltaY < 0 ? 0.1 : -0.1)).toFixed(2)));
+    render();
+  }, { passive: false });
   document.querySelector('#connect-mode').addEventListener('click', () => {
     if (linking) { linking = null; interfaceOptions = []; render(); return; }
     linking = { step: 'source', sourceId: selectedId || nodes[0]?.id };
