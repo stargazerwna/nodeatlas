@@ -159,7 +159,9 @@ function renderNode(node) {
   const traffic = `↓ ${node.rx} Mbps  ↑ ${node.tx} Mbps`;
   const detail = node.status === 'offline' ? (node.pingReachable ? `Ping ${node.pingLatency === null ? 'OK' : `${node.pingLatency} ms`}` : 'SNMP unavailable') : traffic;
   const stateClass = node.status === 'offline' && node.pingReachable ? 'ping-ok' : node.status;
-  return `<button class="map-node ${stateClass}" data-id="${node.id}" style="left:${node.x}%;top:${node.y}%"><span class="node-icon ${type.className}">${type.icon}</span><span class="node-copy"><strong>${node.name}</strong><small>${detail}</small></span><span class="node-state"></span></button>`;
+  const hasHealth = node.status !== 'offline' && (node.cpu !== undefined || node.memory !== undefined);
+  const health = hasHealth ? `<small class="node-health">${node.cpu !== undefined ? `CPU ${node.cpu}%` : ''}${node.cpu !== undefined && node.memory !== undefined ? ' · ' : ''}${node.memory !== undefined ? `MEM ${node.memory}%` : ''}</small>` : '';
+  return `<button class="map-node ${stateClass}" data-id="${node.id}" style="left:${node.x}%;top:${node.y}%"><span class="node-icon ${type.className}">${type.icon}</span><span class="node-copy"><strong>${node.name}</strong><small>${detail}</small>${health}</span><span class="node-state"></span></button>`;
 }
 
 function drawLinks() {
