@@ -18,17 +18,13 @@ const nodeTypes = {
 };
 
 let nodes = [
-  { id: 'gateway', name: '5G Internet Gateway', type: 'gateway', x: 51, y: 15, status: 'healthy', ip: '10.0.0.1', uptime: '99.99%', rx: 24.7, tx: 15.9 },
-  { id: 'router', name: 'Core Router', type: 'router', x: 50, y: 43, status: 'healthy', ip: '192.168.88.1', uptime: '99.97%', rx: 41.6, tx: 3.1 },
-  { id: 'office', name: 'Thessaloniki Office', type: 'server', x: 82, y: 46, status: 'warning', ip: '192.168.88.20', uptime: '99.60%', rx: 5.8, tx: 5.5 },
-  { id: 'dsl', name: 'DSL Router', type: 'router', x: 30, y: 68, status: 'offline', ip: '192.168.88.254', uptime: '95.42%', rx: 0, tx: 0 },
-  { id: 'basement', name: 'Basement OpenWRT', type: 'device', x: 62, y: 76, status: 'healthy', ip: '192.168.88.101', uptime: '99.92%', rx: 0.3, tx: 0.1 },
-  { id: 'dvr', name: 'DVR NIKITI', type: 'camera', x: 14, y: 22, status: 'healthy', ip: '192.168.88.80', uptime: '99.89%', rx: 8.2, tx: 2.4 },
-  { id: 'guest', name: 'AvenueGuests-2.4G', type: 'device', x: 51, y: 87, status: 'offline', ip: '192.168.88.170', uptime: '91.34%', rx: 0, tx: 0 },
+  { id: 'mikrotik', name: 'MikroTik Router', type: 'router', x: 50, y: 20, status: 'healthy', ip: '192.168.88.1', uptime: '99.99%', rx: 12.4, tx: 8.1 },
+  { id: 'accesspoint', name: 'OpenWRT Access Point', type: 'router', x: 28, y: 68, status: 'healthy', ip: '192.168.1.1', uptime: '99.95%', rx: 6.2, tx: 3.4 },
+  { id: 'dvr', name: 'DVR', type: 'camera', x: 72, y: 68, status: 'healthy', ip: '192.168.1.10', uptime: '99.90%', rx: 2.1, tx: 0.6 },
 ];
 
 let links = [];
-let selectedId = 'router';
+let selectedId = 'mikrotik';
 let dragging = null;
 let settingsFeedback = '';
 let actionsMenuOpen = false;
@@ -41,7 +37,7 @@ let pingFeedback = '';
 let refreshInFlight = false;
 let interfaceOptions = [];
 let editingLink = false;
-let workspaceName = 'NIKITI SITE';
+let workspaceName = 'myWorkspace';
 let workspaceMenuOpen = false;
 let editingWorkspaceName = false;
 let workspaceFeedback = '';
