@@ -47,6 +47,7 @@ let sidebarWidth = 224;
 let inspectorWidth = 310;
 let inspectorCollapsed = false;
 let resizingPanel = null;
+let resizingCanvas = null;
 const API_URL = '/api/nodes';
 
 const app = document.querySelector('#app');
@@ -83,7 +84,8 @@ function render() {
           <div class="canvas" id="canvas" style="width:${zoom * 100}%;height:${zoom * 100}%">
             <svg class="links" id="links" aria-hidden="true"></svg>
             ${nodes.map((node) => renderNode(node)).join('')}
-            <div class="canvas-hint">Scroll to zoom <span>·</span> Hold and drag empty space to pan</div>
+            <div class="canvas-hint">Scroll to zoom <span>·</span> Hold and drag empty space to pan <span>·</span> Drag corner to resize</div>
+            <div class="canvas-resize-handle" id="canvas-resize-handle" title="Resize canvas area"></div>
           </div>
         </div>
       </section>
@@ -171,6 +173,10 @@ function bindEvents() {
     if (event.target.dataset.linkId) { selectedLinkId = event.target.dataset.linkId; render(); }
   });
   canvas.addEventListener('pointerdown', (event) => {
+    if (event.target.closest('#canvas-resize-handle')) {
+      resizingCanvas = { startX: event.clientX, startWidth: canvas.getBoundingClientRect().width, startZoom: zoom, nextZoom: zoom };
+      return;
+    }
     const nodeElement = event.target.closest('.map-node');
     if (!nodeElement) {
       if (linking || event.button !== 0) return;
@@ -270,6 +276,11 @@ function bindEvents() {
     if (resizingPanel) {
       document.querySelector(`#${resizingPanel.panel}-handle`)?.classList.remove('active');
       resizingPanel = null;
+      render();
+    }
+    if (resizingCanvas) {
+      zoom = resizingCanvas.nextZoom;
+      resizingCanvas = null;
       render();
     }
   });
@@ -398,6 +409,14 @@ function bindEvents() {
 }
 
 function moveNode(event) {
+  if (resizingCanvas) {
+    const delta = event.clientX - resizingCanvas.startX;
+    resizingCanvas.nextZoom = Math.min(2.5, Math.max(0.5, +(resizingCanvas.startZoom * ((resizingCanvas.startWidth + delta) / resizingCanvas.startWidth)).toFixed(2)));
+    const canvas = document.querySelector('#canvas');
+    canvas.style.width = `${resizingCanvas.nextZoom * 100}%`;
+    canvas.style.height = `${resizingCanvas.nextZoom * 100}%`;
+    return;
+  }
   if (resizingPanel) {
     const delta = event.clientX - resizingPanel.startX;
     const workspace = document.querySelector('.workspace');
