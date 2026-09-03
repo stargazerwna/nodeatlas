@@ -25,10 +25,15 @@ const OIDS = [
   '1.3.6.1.2.1.2.2.1.16.1', // ifOutOctets.1
 ];
 const HEALTH_OIDS = [
-  '1.3.6.1.4.1.2021.11.11.0', // ssCpuIdle
+  '1.3.6.1.4.1.2021.11.11.0', // ssCpuIdle (UCD-SNMP, used by net-snmp on OpenWrt/Linux)
   '1.3.6.1.4.1.2021.4.5.0', // memTotalReal
   '1.3.6.1.4.1.2021.4.6.0', // memAvailReal
 ];
+// RouterOS does not implement UCD-SNMP; it exposes health via HOST-RESOURCES-MIB instead.
+const MIKROTIK_CPU_OID = '1.3.6.1.2.1.25.3.3.1.2'; // hrProcessorLoad
+const MIKROTIK_STORAGE_DESCR_OID = '1.3.6.1.2.1.25.2.3.1.3'; // hrStorageDescr
+const MIKROTIK_STORAGE_SIZE_OID = '1.3.6.1.2.1.25.2.3.1.5'; // hrStorageSize
+const MIKROTIK_STORAGE_USED_OID = '1.3.6.1.2.1.25.2.3.1.6'; // hrStorageUsed
 
 let nodes = await loadNodes();
 let snapshots = new Map();
@@ -205,7 +210,25 @@ function pollLink(link) {
   });
 }
 
+async function pollMikrotikHealth(node) {
+  const [cpuEntries, descrEntries, sizeEntries, usedEntries] = await Promise.all([
+    walkSnmp(node, MIKROTIK_CPU_OID), walkSnmp(node, MIKROTIK_STORAGE_DESCR_OID), walkSnmp(node, MIKROTIK_STORAGE_SIZE_OID), walkSnmp(node, MIKROTIK_STORAGE_USED_OID),
+  ]);
+  const cpuLoads = cpuEntries.map((item) => Number(item.value)).filter((value) => Number.isFinite(value));
+  const cpu = cpuLoads.length ? Math.round(cpuLoads.reduce((sum, value) => sum + value, 0) / cpuLoads.length) : undefined;
+  const memoryEntry = descrEntries.find((item) => /memory|ram/i.test(valueText(item.value)));
+  let memory;
+  if (memoryEntry) {
+    const index = oidSuffix(memoryEntry.oid, MIKROTIK_STORAGE_DESCR_OID).join('.');
+    const size = sizeEntries.find((item) => oidSuffix(item.oid, MIKROTIK_STORAGE_SIZE_OID).join('.') === index);
+    const used = usedEntries.find((item) => oidSuffix(item.oid, MIKROTIK_STORAGE_USED_OID).join('.') === index);
+    if (size && used && Number(size.value) > 0) memory = Math.min(100, Math.max(0, Math.round((Number(used.value) / Number(size.value)) * 100)));
+  }
+  return { cpu, memory };
+}
+
 function pollHealth(node) {
+  if (node.platform === 'mikrotik') return pollMikrotikHealth(node).catch(() => ({}));
   return new Promise((resolve) => {
     const session = snmp.createSession(node.ip, node.community || process.env.SNMP_COMMUNITY || 'public', { port: Number(node.port || 161), timeout: Number(process.env.SNMP_TIMEOUT || 2000), retries: 0, version: snmp.Version2c });
     session.get(HEALTH_OIDS, (error, varbinds) => {
