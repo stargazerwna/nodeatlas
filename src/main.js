@@ -43,6 +43,10 @@ let workspaceMenuOpen = false;
 let editingWorkspaceName = false;
 let workspaceFeedback = '';
 let zoom = 1;
+let sidebarWidth = 224;
+let inspectorWidth = 310;
+let inspectorCollapsed = false;
+let resizingPanel = null;
 const API_URL = '/api/nodes';
 
 const app = document.querySelector('#app');
@@ -66,14 +70,15 @@ function render() {
       ${renderSiteSwitcher()}
       <div class="top-actions"><span class="live"><i></i> LIVE</span><button class="icon-button" title="Notifications">♧<b>2</b></button><button class="avatar" title="Account">SA</button></div>
     </header>
-    <main class="workspace">
+    <main class="workspace" style="grid-template-columns:${sidebarWidth}px 6px minmax(400px,1fr) ${inspectorCollapsed ? '0px' : `6px ${inspectorWidth}px`}">
       <aside class="sidebar">
         <div class="nav-section"><span class="section-label">WORKSPACE</span><button class="nav-item active">⌘ <span>Topology</span></button><button class="nav-item">◴ <span>Events</span><em>12</em></button><button class="nav-item">▥ <span>Reports</span></button></div>
         <div class="nav-section palette"><span class="section-label">ADD TO MAP</span>${Object.entries(nodeTypes).map(([key, item]) => `<button class="tool" draggable="true" data-type="${key}"><span class="tool-icon ${item.className}">${item.icon}</span>${item.label}<small>Drag</small></button>`).join('')}</div>
         <div class="sidebar-footer"><span>MONITORED HOSTS</span><strong>${nodes.length}</strong><div class="health-bar"><i></i><i></i><i></i><i class="down"></i></div><small>5 online · 1 degraded · 2 offline</small></div>
       </aside>
+      <div class="resize-handle" id="sidebar-handle"></div>
       <section class="content">
-        <div class="canvas-toolbar"><div><h1>Site topology</h1><p>Live infrastructure overview <span>Updated just now</span></p></div><div class="toolbar-actions"><button class="outline-btn" id="fit-map">⊙</button><button class="outline-btn ${linking ? 'selected-tool' : ''}" id="connect-mode">⌁ <span>${linking ? 'Select target' : 'Connect'}</span></button><button class="primary-btn" id="add-device">＋ <span>Device</span></button></div></div>
+        <div class="canvas-toolbar"><div><h1>Site topology</h1><p>Live infrastructure overview <span>Updated just now</span></p></div><div class="toolbar-actions">${inspectorCollapsed ? '<button class="outline-btn" id="show-inspector" title="Show device details">▤</button>' : ''}<button class="outline-btn" id="fit-map">⊙</button><button class="outline-btn ${linking ? 'selected-tool' : ''}" id="connect-mode">⌁ <span>${linking ? 'Select target' : 'Connect'}</span></button><button class="primary-btn" id="add-device">＋ <span>Device</span></button></div></div>
         <div class="canvas-wrap" id="canvas-wrap">
           <div class="canvas" id="canvas" style="width:${zoom * 100}%;height:${zoom * 100}%">
             <svg class="links" id="links" aria-hidden="true"></svg>
@@ -82,7 +87,8 @@ function render() {
           </div>
         </div>
       </section>
-      <aside class="inspector">
+      ${inspectorCollapsed ? '' : '<div class="resize-handle" id="inspector-handle"></div>'}
+      ${inspectorCollapsed ? '' : `<aside class="inspector">
         <div class="inspector-heading"><span>DEVICE DETAILS</span><button class="close-inspector" title="Close inspector">×</button></div>
         <div class="device-hero"><div class="large-icon ${nodeTypes[selected.type].className}">${nodeTypes[selected.type].icon}</div><div><h2>${selected.name}</h2><p><span class="status-dot ${selected.status}"></span>${statusLabel(selected.status)}</p></div><div class="device-actions"><button class="more" id="device-actions" title="More device actions" aria-expanded="${actionsMenuOpen}">•••</button>${actionsMenuOpen ? '<button class="delete-device" id="delete-device">Delete device</button>' : ''}</div></div>
         <div class="snmp-identity"><span>SNMP SYSTEM NAME</span><strong>${selected.systemName || '--'}</strong>${selected.platformVersion ? `<small>${selected.platformVersion}</small>` : ''}</div>
@@ -92,7 +98,8 @@ function render() {
         <div class="metric"><div><span>MEMORY</span><strong>${selected.memory ?? '--'}${selected.memory === undefined ? '' : '%'}</strong></div><div class="meter teal"><i style="width:${selected.memory ?? 0}%"></i></div></div>
         <div class="traffic-title"><span>TRAFFIC</span><button>24H ⌄</button></div><div class="chart"><svg viewBox="0 0 280 100" preserveAspectRatio="none"><path d="M0 83 L12 77 L25 80 L38 58 L52 68 L66 42 L79 54 L93 27 L106 46 L120 39 L134 64 L148 45 L161 57 L175 31 L188 43 L202 25 L216 49 L229 40 L242 62 L255 53 L268 72 L280 58 V100 H0Z"></path><polyline points="0,83 12,77 25,80 38,58 52,68 66,42 79,54 93,27 106,46 120,39 134,64 148,45 161,57 175,31 188,43 202,25 216,49 229,40 242,62 255,53 268,72 280,58"></polyline></svg><div class="chart-labels"><span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>NOW</span></div></div>
         <button class="event-button">View device events <span>→</span></button>
-      </aside>${linking?.step === 'source' ? renderLinkDialog() : ''}${renderLinkEditor()}${renderContextMenu()}${pingFeedback ? `<div class="ping-feedback">${pingFeedback}</div>` : ''}
+      </aside>`}
+      ${linking?.step === 'source' ? renderLinkDialog() : ''}${renderLinkEditor()}${renderContextMenu()}${pingFeedback ? `<div class="ping-feedback">${pingFeedback}</div>` : ''}
     </main>`;
   bindEvents();
   drawLinks();
@@ -184,6 +191,7 @@ function bindEvents() {
       return;
     }
     selectedId = node.id;
+    inspectorCollapsed = false;
     dragging = { id: node.id, startX: event.clientX, startY: event.clientY, x: node.x, y: node.y };
     nodeElement.setPointerCapture(event.pointerId);
     render();
@@ -259,6 +267,11 @@ function bindEvents() {
     dragging = null;
     if (panning) document.querySelector('#canvas-wrap').style.cursor = '';
     panning = null;
+    if (resizingPanel) {
+      document.querySelector(`#${resizingPanel.panel}-handle`)?.classList.remove('active');
+      resizingPanel = null;
+      render();
+    }
   });
   document.querySelectorAll('.tool').forEach((tool) => tool.addEventListener('dragstart', (event) => event.dataTransfer.setData('node-type', tool.dataset.type)));
   canvas.addEventListener('dragover', (event) => event.preventDefault());
@@ -280,6 +293,20 @@ function bindEvents() {
     zoom = Math.min(2.5, Math.max(0.5, +(zoom + (event.deltaY < 0 ? 0.1 : -0.1)).toFixed(2)));
     render();
   }, { passive: false });
+  const closeInspector = document.querySelector('.close-inspector');
+  if (closeInspector) closeInspector.addEventListener('click', () => { inspectorCollapsed = true; render(); });
+  const showInspector = document.querySelector('#show-inspector');
+  if (showInspector) showInspector.addEventListener('click', () => { inspectorCollapsed = false; render(); });
+  const sidebarHandle = document.querySelector('#sidebar-handle');
+  if (sidebarHandle) sidebarHandle.addEventListener('pointerdown', (event) => {
+    resizingPanel = { panel: 'sidebar', startX: event.clientX, startWidth: sidebarWidth };
+    sidebarHandle.classList.add('active');
+  });
+  const inspectorHandle = document.querySelector('#inspector-handle');
+  if (inspectorHandle) inspectorHandle.addEventListener('pointerdown', (event) => {
+    resizingPanel = { panel: 'inspector', startX: event.clientX, startWidth: inspectorWidth };
+    inspectorHandle.classList.add('active');
+  });
   document.querySelector('#connect-mode').addEventListener('click', () => {
     if (linking) { linking = null; interfaceOptions = []; render(); return; }
     linking = { step: 'source', sourceId: selectedId || nodes[0]?.id };
@@ -312,7 +339,8 @@ function bindEvents() {
       render();
     });
   }
-  document.querySelector('#device-actions').addEventListener('click', () => {
+  const deviceActions = document.querySelector('#device-actions');
+  if (deviceActions) deviceActions.addEventListener('click', () => {
     actionsMenuOpen = !actionsMenuOpen;
     render();
   });
@@ -331,7 +359,8 @@ function bindEvents() {
     actionsMenuOpen = false;
     render();
   });
-  document.querySelector('#device-form').addEventListener('submit', async (event) => {
+  const deviceForm = document.querySelector('#device-form');
+  if (deviceForm) deviceForm.addEventListener('submit', async (event) => {
     event.preventDefault();
     const settings = Object.fromEntries(new FormData(event.currentTarget));
     if (!settings.name.trim() || !settings.ip.trim()) {
@@ -369,6 +398,17 @@ function bindEvents() {
 }
 
 function moveNode(event) {
+  if (resizingPanel) {
+    const delta = event.clientX - resizingPanel.startX;
+    const workspace = document.querySelector('.workspace');
+    if (resizingPanel.panel === 'sidebar') {
+      sidebarWidth = Math.min(420, Math.max(180, resizingPanel.startWidth + delta));
+    } else {
+      inspectorWidth = Math.min(560, Math.max(240, resizingPanel.startWidth - delta));
+    }
+    workspace.style.gridTemplateColumns = `${sidebarWidth}px 6px minmax(400px,1fr) 6px ${inspectorWidth}px`;
+    return;
+  }
   if (panning) {
     const wrap = document.querySelector('#canvas-wrap');
     wrap.scrollLeft = panning.scrollLeft - (event.clientX - panning.startX);

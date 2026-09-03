@@ -1,4 +1,5 @@
 import http from 'node:http';
+import dgram from 'node:dgram';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readFile, writeFile } from 'node:fs/promises';
@@ -94,6 +95,98 @@ function getInterfaces(node) {
   });
 }
 
+function walkSnmp(node, oid) {
+  return new Promise((resolve) => {
+    const session = snmp.createSession(node.ip, node.community || process.env.SNMP_COMMUNITY || 'public', { port: Number(node.port || 161), timeout: Number(process.env.SNMP_TIMEOUT || 2000), retries: 0, version: snmp.Version2c });
+    const varbinds = [];
+    session.subtree(oid, 20, (items) => {
+      varbinds.push(...items.filter((item) => !snmp.isVarbindError(item)));
+      return false;
+    }, () => {
+      session.close();
+      resolve(varbinds);
+    });
+  });
+}
+
+function oidSuffix(oid, base) {
+  return oid.startsWith(`${base}.`) ? oid.slice(base.length + 1).split('.').map(Number) : [];
+}
+
+function valueText(value) {
+  return Buffer.isBuffer(value) ? value.toString('utf8').replace(/\0/g, '').trim() : String(value ?? '').trim();
+}
+
+function valueIp(value) {
+  const text = valueText(value);
+  if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(text)) return text;
+  if (Buffer.isBuffer(value) && value.length === 4) return [...value].join('.');
+  return '';
+}
+
+async function discoverSnmpNeighbors(node, protocol) {
+  const candidates = [];
+  if (protocol === 'lldp' || protocol === 'all') {
+    const base = '1.0.8802.1.1.2.1.4.1.1';
+    const [names, descriptions, ports, addresses] = await Promise.all([
+      walkSnmp(node, `${base}.9`), walkSnmp(node, `${base}.10`), walkSnmp(node, `${base}.8`), walkSnmp(node, `${base}.13`),
+    ]);
+    const byKey = new Map();
+    names.forEach((item) => {
+      const suffix = oidSuffix(item.oid, `${base}.9`); const key = suffix.slice(0, -1).join('.');
+      byKey.set(key, { protocol: 'LLDP', remoteName: valueText(item.value), localInterfaceIndex: Number(suffix[1]) || 0 });
+    });
+    descriptions.forEach((item) => { const key = oidSuffix(item.oid, `${base}.10`).slice(0, -1).join('.'); if (byKey.has(key)) byKey.get(key).remotePlatform = valueText(item.value); });
+    ports.forEach((item) => { const key = oidSuffix(item.oid, `${base}.8`).slice(0, -1).join('.'); if (byKey.has(key)) byKey.get(key).remotePort = valueText(item.value); });
+    addresses.forEach((item) => { const suffix = oidSuffix(item.oid, `${base}.13`); const key = suffix.slice(0, -2).join('.'); if (byKey.has(key)) byKey.get(key).remoteIp = valueIp(item.value); });
+    candidates.push(...byKey.values());
+  }
+  if (protocol === 'cdp' || protocol === 'all') {
+    const base = '1.3.6.1.4.1.9.9.23.1.2.1.1';
+    const [ids, platforms, ports, addresses] = await Promise.all([
+      walkSnmp(node, `${base}.6`), walkSnmp(node, `${base}.8`), walkSnmp(node, `${base}.7`), walkSnmp(node, `${base}.4`),
+    ]);
+    const byKey = new Map();
+    ids.forEach((item) => { const suffix = oidSuffix(item.oid, `${base}.6`); const key = suffix.slice(0, -1).join('.'); byKey.set(key, { protocol: 'CDP', remoteName: valueText(item.value), localInterfaceIndex: Number(suffix[0]) || 0 }); });
+    platforms.forEach((item) => { const key = oidSuffix(item.oid, `${base}.8`).slice(0, -1).join('.'); if (byKey.has(key)) byKey.get(key).remotePlatform = valueText(item.value); });
+    ports.forEach((item) => { const key = oidSuffix(item.oid, `${base}.7`).slice(0, -1).join('.'); if (byKey.has(key)) byKey.get(key).remotePort = valueText(item.value); });
+    addresses.forEach((item) => { const key = oidSuffix(item.oid, `${base}.4`).slice(0, -1).join('.'); if (byKey.has(key)) byKey.get(key).remoteIp = valueIp(item.value); });
+    candidates.push(...byKey.values());
+  }
+  return candidates;
+}
+
+function discoverMndpNeighbors() {
+  return new Promise((resolve) => {
+    const socket = dgram.createSocket('udp4'); const candidates = new Map();
+    const finish = () => { clearTimeout(timer); try { socket.close(); } catch {} resolve([...candidates.values()]); };
+    const timer = setTimeout(finish, 1800);
+    socket.on('message', (message, remote) => {
+      if (message.length < 4) return;
+      let offset = 4; const fields = {};
+      while (offset + 4 <= message.length) {
+        const type = message.readUInt16LE(offset); const length = message.readUInt16LE(offset + 2); offset += 4;
+        if (length < 4 || offset + length - 4 > message.length) break;
+        const value = message.subarray(offset, offset + length - 4); offset += length - 4;
+        fields[type] = value;
+      }
+      const remoteIp = valueIp(fields[11]) || remote.address;
+      const remoteName = valueText(fields[2]) || remoteIp;
+      candidates.set(`${remoteIp}:${remoteName}`, { protocol: 'MNDP', remoteName, remoteIp, remotePlatform: valueText(fields[4]), remotePort: valueText(fields[9]) });
+    });
+    socket.bind(0, () => { socket.setBroadcast(true); socket.send(Buffer.alloc(4), 0, 4, 5678, '255.255.255.255'); });
+    socket.on('error', finish);
+  });
+}
+
+async function discoverNeighbors(node, protocol) {
+  const normalizedProtocol = ['cdp', 'lldp', 'mndp', 'all'].includes(protocol) ? protocol : 'all';
+  const results = normalizedProtocol === 'mndp' ? await discoverMndpNeighbors() : await discoverSnmpNeighbors(node, normalizedProtocol === 'all' ? 'all' : normalizedProtocol).then(async (items) => normalizedProtocol === 'all' ? [...items, ...await discoverMndpNeighbors()] : items);
+  const unique = new Map();
+  results.forEach((candidate) => { const key = candidate.remoteIp || `${candidate.remoteName}:${candidate.remotePort || ''}`; if (!unique.has(key)) unique.set(key, candidate); });
+  return [...unique.values()];
+}
+
 function pollLink(link) {
   const source = nodes.find((node) => node.id === link.sourceId);
   if (!source) return Promise.resolve({ ...link, status: 'offline', rx: 0, tx: 0 });
@@ -170,6 +263,20 @@ const server = http.createServer(async (request, response) => {
     const id = request.url.split('/')[3];
     const node = nodes.find((item) => item.id === id);
     return send(response, node ? 200 : 404, node ? await getInterfaces(node) : { error: 'Node not found.' });
+  }
+  if (request.method === 'POST' && request.url?.startsWith('/api/nodes/') && request.url.endsWith('/discover-neighbors')) {
+    const id = request.url.split('/')[3];
+    const node = nodes.find((item) => item.id === id);
+    if (!node) return send(response, 404, { error: 'Node not found.' });
+    let body = '';
+    for await (const chunk of request) body += chunk;
+    let protocol = 'all';
+    try { protocol = JSON.parse(body || '{}').protocol || 'all'; } catch { return send(response, 400, { error: 'Invalid discovery request.' }); }
+    try {
+      return send(response, 200, { sourceId: node.id, protocol, candidates: await discoverNeighbors(node, protocol) });
+    } catch (error) {
+      return send(response, 502, { error: error.message || 'Neighbor discovery failed.' });
+    }
   }
   if (request.method === 'GET' && request.url === '/api/links') return send(response, 200, await Promise.all(links.map(pollLink)));
   if (request.method === 'GET' && request.url === '/api/workspace') return send(response, 200, workspace);
