@@ -80,7 +80,7 @@ function render() {
       </aside>
       <div class="resize-handle" id="sidebar-handle"></div>
       <section class="content">
-        <div class="canvas-toolbar"><div><h1>Site topology</h1><p>Live infrastructure overview <span>Updated just now</span></p></div><div class="toolbar-actions">${inspectorCollapsed ? '<button class="outline-btn" id="show-inspector" title="Show device details">▤</button>' : ''}<button class="outline-btn" id="fit-map">⊙</button><button class="outline-btn ${linking ? 'selected-tool' : ''}" id="connect-mode">⌁ <span>${linking ? 'Select target' : 'Connect'}</span></button><button class="primary-btn" id="add-device">＋ <span>Device</span></button></div></div>
+        <div class="canvas-toolbar"><div><h1>Site topology</h1><p>Live infrastructure overview <span>Updated just now</span></p></div><div class="toolbar-actions">${inspectorCollapsed ? '<button class="outline-btn" id="show-inspector" title="Show device details">▤</button>' : ''}<button class="outline-btn" id="fit-map">⊙</button><button class="outline-btn" id="discover-toolbar" title="Discover CDP, LLDP, or MNDP neighbors">⌕ <span>Discover</span></button><button class="outline-btn ${linking ? 'selected-tool' : ''}" id="connect-mode">⌁ <span>${linking ? 'Select target' : 'Connect'}</span></button><button class="primary-btn" id="add-device">＋ <span>Device</span></button></div></div>
         <div class="canvas-wrap" id="canvas-wrap">
           <div class="canvas" id="canvas" style="width:${zoom * 100}%;height:${zoom * 100}%">
             <svg class="links" id="links" aria-hidden="true"></svg>
@@ -144,7 +144,7 @@ function renderDiscoveryDialog() {
       : discovery.candidates.length === 0
         ? '<p class="discovery-status">No neighbors found. Make sure LLDP/CDP or MikroTik neighbor discovery is enabled on the device.</p>'
         : `<ul class="discovery-list">${discovery.candidates.map((candidate, index) => `<li><label><input type="checkbox" data-index="${index}" ${candidate.remoteIp ? '' : 'disabled'} /><span class="discovery-info"><strong>${candidate.remoteName || candidate.remoteIp || 'Unknown device'}</strong><small>${candidate.protocol}${candidate.remoteIp ? ` · ${candidate.remoteIp}` : ' · no IP reported'}${candidate.remotePlatform ? ` · ${candidate.remotePlatform}` : ''}</small></span></label></li>`).join('')}</ul>`;
-  return `<div class="link-dialog"><form id="discovery-form"><h2>Discover neighbors of ${discovery.sourceName}</h2>${body}<button class="primary-btn" type="submit" ${discovery.loading || discovery.error || !discovery.candidates?.length ? 'disabled' : ''}>Add selected devices</button><button class="cancel-link" type="button" id="cancel-discovery">Close</button></form></div>`;
+  return `<div class="link-dialog"><form id="discovery-form"><h2>Discover neighbors of ${discovery.sourceName}</h2><label>Protocol<select name="protocol"><option value="all" ${discovery.protocol === 'all' ? 'selected' : ''}>CDP + LLDP + MNDP</option><option value="cdp" ${discovery.protocol === 'cdp' ? 'selected' : ''}>CDP</option><option value="lldp" ${discovery.protocol === 'lldp' ? 'selected' : ''}>LLDP</option><option value="mndp" ${discovery.protocol === 'mndp' ? 'selected' : ''}>MNDP</option></select></label>${body}<button class="primary-btn" type="submit" ${discovery.loading || discovery.error || !discovery.candidates?.length ? 'disabled' : ''}>Add selected devices</button><button class="cancel-link" type="button" id="cancel-discovery">Close</button></form></div>`;
 }
 
 function renderSiteSwitcher() {
@@ -179,6 +179,21 @@ function formatRate(bits) {
   if (bits >= 1000000) return `${(bits / 1000000).toFixed(1)} Mbps`;
   if (bits >= 1000) return `${(bits / 1000).toFixed(1)} Kbps`;
   return `${Math.round(bits || 0)} bps`;
+}
+
+async function startDiscovery(node, protocol) {
+  if (!node) return;
+  discovery = { sourceId: node.id, sourceName: node.name, protocol, candidates: [], loading: true, error: '' };
+  render();
+  try {
+    const response = await fetch(`${API_URL}/${node.id}/discover-neighbors`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ protocol }) });
+    if (!response.ok) throw new Error();
+    const result = await response.json();
+    discovery = { ...discovery, loading: false, candidates: result.candidates || [] };
+  } catch {
+    discovery = { ...discovery, loading: false, error: `Could not discover neighbors of ${node.name}. Check the monitoring service.` };
+  }
+  render();
 }
 
 function bindEvents() {
@@ -283,19 +298,15 @@ function bindEvents() {
   if (discoverButton) discoverButton.addEventListener('click', async () => {
     const node = contextMenu;
     contextMenu = null;
-    discovery = { sourceId: node.id, sourceName: node.name, candidates: [], loading: true, error: '' };
-    render();
-    try {
-      const result = await fetch(`${API_URL}/${node.id}/discover-neighbors`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ protocol: 'all' }) }).then((response) => response.ok ? response.json() : Promise.reject(response));
-      discovery = { ...discovery, loading: false, candidates: result.candidates };
-    } catch {
-      discovery = { ...discovery, loading: false, error: `Could not discover neighbors of ${node.name}. Check the monitoring service.` };
-    }
-    render();
+    startDiscovery(node, 'all');
   });
+  const discoverToolbar = document.querySelector('#discover-toolbar');
+  if (discoverToolbar) discoverToolbar.addEventListener('click', () => startDiscovery(nodes.find((node) => node.id === selectedId) || nodes.find((node) => node.type === 'router' || node.type === 'gateway') || nodes[0], 'all'));
   const cancelDiscovery = document.querySelector('#cancel-discovery');
   if (cancelDiscovery) cancelDiscovery.addEventListener('click', () => { discovery = null; render(); });
   const discoveryForm = document.querySelector('#discovery-form');
+  const discoveryProtocol = discoveryForm?.querySelector('select[name="protocol"]');
+  if (discoveryProtocol) discoveryProtocol.addEventListener('change', () => startDiscovery(nodes.find((node) => node.id === discovery.sourceId), discoveryProtocol.value));
   if (discoveryForm) discoveryForm.addEventListener('submit', async (event) => {
     event.preventDefault();
     const source = nodes.find((item) => item.id === discovery.sourceId);
@@ -303,10 +314,12 @@ function bindEvents() {
     if (!source || !chosen.length) { discovery = null; render(); return; }
     let created = 0;
     for (const [index, candidate] of chosen.entries()) {
+      if (nodes.some((node) => node.ip === candidate.remoteIp)) continue;
       const device = {
         id: `neighbor-${Date.now()}-${index}`,
         name: candidate.remoteName || candidate.remoteIp,
-        type: 'device',
+        type: 'router',
+        platform: /mikrotik|routeros/i.test(candidate.remotePlatform || '') ? 'mikrotik' : 'other',
         ip: candidate.remoteIp,
         x: Math.min(94, Math.max(6, (source.x || 50) + (index % 2 === 0 ? 8 : -8))),
         y: Math.min(91, Math.max(6, (source.y || 50) + 10 + index * 6)),
@@ -315,8 +328,10 @@ function bindEvents() {
         const saved = await fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(device) }).then((response) => response.ok ? response.json() : Promise.reject());
         nodes.push(saved);
         created += 1;
-        const link = await fetch('/api/links', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sourceId: source.id, targetId: saved.id, interfaceIndex: candidate.localInterfaceIndex || 1 }) }).then((response) => response.ok ? response.json() : null);
-        if (link) links.push(link);
+        if (candidate.localInterfaceIndex) {
+          const link = await fetch('/api/links', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sourceId: source.id, targetId: saved.id, interfaceIndex: candidate.localInterfaceIndex }) }).then((response) => response.ok ? response.json() : null);
+          if (link) links.push(link);
+        }
       } catch {
         // Skip devices that failed to save (e.g. duplicate IP) and continue with the rest.
       }

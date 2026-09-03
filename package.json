@@ -1,6 +1,6 @@
 {
   "name": "netmonitor",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": true,
   "type": "module",
   "main": "electron/main.js",
@@ -23,7 +23,7 @@
   "build": {
     "appId": "com.netmonitor.nodeatlas",
     "productName": "NodeAtlas",
-    "icon": "build/icon.png",
+    "icon": "build/icon.ico",
     "directories": {
       "output": "dist-electron"
     },
