@@ -26,6 +26,7 @@ let nodes = [
 let links = [];
 let selectedId = 'mikrotik';
 let dragging = null;
+let panning = null;
 let settingsFeedback = '';
 let actionsMenuOpen = false;
 let editingSettings = false;
@@ -53,6 +54,9 @@ function statusLabel(status) {
 }
 
 function render() {
+  const previousWrap = document.querySelector('#canvas-wrap');
+  const scrollLeft = previousWrap?.scrollLeft || 0;
+  const scrollTop = previousWrap?.scrollTop || 0;
   const selected = nodes.find((node) => node.id === selectedId) || nodes[0];
   if (!nodeTypes[selected.type]) selected.type = 'device';
   const formValues = settingsDraft?.id === selected.id ? settingsDraft : selected;
@@ -71,10 +75,10 @@ function render() {
       <section class="content">
         <div class="canvas-toolbar"><div><h1>Site topology</h1><p>Live infrastructure overview <span>Updated just now</span></p></div><div class="toolbar-actions"><button class="outline-btn" id="fit-map">⊙</button><button class="outline-btn ${linking ? 'selected-tool' : ''}" id="connect-mode">⌁ <span>${linking ? 'Select target' : 'Connect'}</span></button><button class="primary-btn" id="add-device">＋ <span>Device</span></button></div></div>
         <div class="canvas-wrap" id="canvas-wrap">
-          <div class="canvas" id="canvas" style="transform:scale(${zoom})">
+          <div class="canvas" id="canvas" style="width:${zoom * 100}%;height:${zoom * 100}%">
             <svg class="links" id="links" aria-hidden="true"></svg>
             ${nodes.map((node) => renderNode(node)).join('')}
-            <div class="canvas-hint">Scroll to zoom <span>·</span> Drag components to arrange</div>
+            <div class="canvas-hint">Scroll to zoom <span>·</span> Hold and drag empty space to pan</div>
           </div>
         </div>
       </section>
@@ -92,6 +96,8 @@ function render() {
     </main>`;
   bindEvents();
   drawLinks();
+  const wrap = document.querySelector('#canvas-wrap');
+  if (wrap) { wrap.scrollLeft = scrollLeft; wrap.scrollTop = scrollTop; }
 }
 
 function renderLinkDialog() {
@@ -159,7 +165,13 @@ function bindEvents() {
   });
   canvas.addEventListener('pointerdown', (event) => {
     const nodeElement = event.target.closest('.map-node');
-    if (!nodeElement) return;
+    if (!nodeElement) {
+      if (linking || event.button !== 0) return;
+      const wrap = document.querySelector('#canvas-wrap');
+      panning = { startX: event.clientX, startY: event.clientY, scrollLeft: wrap.scrollLeft, scrollTop: wrap.scrollTop };
+      wrap.style.cursor = 'grabbing';
+      return;
+    }
     const node = nodes.find((item) => item.id === nodeElement.dataset.id);
     if (linking?.step === 'target') {
       if (node.id === linking.sourceId) return;
@@ -245,6 +257,8 @@ function bindEvents() {
       fetch(`${API_URL}/${node.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ x: node.x, y: node.y }) }).catch(() => {});
     }
     dragging = null;
+    if (panning) document.querySelector('#canvas-wrap').style.cursor = '';
+    panning = null;
   });
   document.querySelectorAll('.tool').forEach((tool) => tool.addEventListener('dragstart', (event) => event.dataTransfer.setData('node-type', tool.dataset.type)));
   canvas.addEventListener('dragover', (event) => event.preventDefault());
@@ -355,6 +369,12 @@ function bindEvents() {
 }
 
 function moveNode(event) {
+  if (panning) {
+    const wrap = document.querySelector('#canvas-wrap');
+    wrap.scrollLeft = panning.scrollLeft - (event.clientX - panning.startX);
+    wrap.scrollTop = panning.scrollTop - (event.clientY - panning.startY);
+    return;
+  }
   if (!dragging) return;
   const canvas = document.querySelector('#canvas');
   const bounds = canvas.getBoundingClientRect();
