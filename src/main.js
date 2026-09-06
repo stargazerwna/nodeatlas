@@ -25,8 +25,10 @@ let nodes = [
 
 let links = [];
 let selectedId = 'mikrotik';
+let selectedNodeIds = new Set();
 let dragging = null;
 let panning = null;
+let selecting = null;
 let settingsFeedback = '';
 let actionsMenuOpen = false;
 let editingSettings = false;
@@ -36,12 +38,17 @@ let selectedLinkId = '';
 let contextMenu = null;
 let pingFeedback = '';
 let refreshInFlight = false;
+let nodesLoading = false;
+let deletingNodes = false;
+let loadedNodeCount = 0;
 let interfaceOptions = [];
 let editingLink = false;
 let workspaceName = 'myWorkspace';
 let workspaceMenuOpen = false;
 let editingWorkspaceName = false;
 let workspaceFeedback = '';
+let windImportProgress = null;
+let windImportProgressTimer = null;
 let zoom = 1;
 let sidebarWidth = 224;
 let inspectorWidth = 310;
@@ -50,6 +57,8 @@ let resizingPanel = null;
 let resizingCanvas = null;
 let discovery = null;
 const API_URL = '/api/nodes';
+const MAX_VISIBLE_NODES = 5000;
+let nodeFilter = 'infrastructure';
 
 const app = document.querySelector('#app');
 
@@ -59,16 +68,34 @@ function statusLabel(status) {
   return status === 'healthy' ? 'Online' : status === 'warning' ? 'Degraded' : 'Offline';
 }
 
+function isClientNode(node) {
+  return node.windType === 'client' || node.type === 'client' || node.kind === 'client';
+}
+
+function isAccessPointNode(node) {
+  return ['ap', 'p2p-ap', 'access-point', 'accesspoint'].includes(String(node.windType || node.kind || node.type).toLowerCase());
+}
+
+function visibleNodes() {
+  const filtered = nodeFilter === 'access-points'
+    ? nodes.filter(isAccessPointNode)
+    : nodeFilter === 'all'
+      ? nodes
+      : nodes.filter((node) => !isClientNode(node));
+  return filtered.slice(0, MAX_VISIBLE_NODES);
+}
+
 function render() {
   const previousWrap = document.querySelector('#canvas-wrap');
   const scrollLeft = previousWrap?.scrollLeft || 0;
   const scrollTop = previousWrap?.scrollTop || 0;
   const selected = nodes.find((node) => node.id === selectedId) || nodes[0];
+  const displayedNodes = visibleNodes();
   if (!nodeTypes[selected.type]) selected.type = 'device';
   const formValues = settingsDraft?.id === selected.id ? settingsDraft : selected;
   app.innerHTML = `
     <header class="topbar">
-      <a class="brand" href="https://wna.gr/nodesatlas" target="_blank" rel="noreferrer"><span class="brand-mark">N</span><span>node<span>atlas</span></span></a>
+      <a class="brand" href="https://wna.gr/nodesatlas" target="_blank" rel="noreferrer"><span class="brand-mark">N</span><span>Nodes<span>Atlas</span></span></a>
       ${renderSiteSwitcher()}
       <div class="top-actions"><span class="live"><i></i> LIVE</span><button class="icon-button" title="Notifications">♧<b>2</b></button><button class="avatar" title="Account">SA</button></div>
     </header>
@@ -76,16 +103,17 @@ function render() {
       <aside class="sidebar">
         <div class="nav-section"><span class="section-label">WORKSPACE</span><button class="nav-item active">⌘ <span>Topology</span></button><button class="nav-item">◴ <span>Events</span><em>12</em></button><button class="nav-item">▥ <span>Reports</span></button></div>
         <div class="nav-section palette"><span class="section-label">ADD TO MAP</span>${Object.entries(nodeTypes).map(([key, item]) => `<button class="tool" draggable="true" data-type="${key}"><span class="tool-icon ${item.className}">${item.icon}</span>${item.label}<small>Drag</small></button>`).join('')}</div>
-        <div class="sidebar-footer"><span>MONITORED HOSTS</span><strong>${nodes.length}</strong><div class="health-bar"><i></i><i></i><i></i><i class="down"></i></div><small>5 online · 1 degraded · 2 offline</small></div>
+        <div class="sidebar-footer"><span>VISIBLE HOSTS</span><strong>${displayedNodes.length}</strong><div class="health-bar"><i></i><i></i><i></i><i class="down"></i></div><small>${nodes.length.toLocaleString()} loaded</small></div>
       </aside>
       <div class="resize-handle" id="sidebar-handle"></div>
       <section class="content">
-        <div class="canvas-toolbar"><div><h1>Site topology</h1><p>Live infrastructure overview <span>Updated just now</span></p></div><div class="toolbar-actions">${inspectorCollapsed ? '<button class="outline-btn" id="show-inspector" title="Show device details">▤</button>' : ''}<button class="outline-btn" id="fit-map">⊙</button><button class="outline-btn" id="discover-toolbar" title="Discover CDP, LLDP, or MNDP neighbors">⌕ <span>Discover</span></button><button class="outline-btn ${linking ? 'selected-tool' : ''}" id="connect-mode">⌁ <span>${linking ? 'Select target' : 'Connect'}</span></button><button class="primary-btn" id="add-device">＋ <span>Device</span></button></div></div>
+        <div class="canvas-toolbar"><div><h1>Site topology</h1><p>Live infrastructure overview <span>Updated just now</span></p>${nodesLoading ? `<div class="nodes-loader" role="status" aria-live="polite"><div class="nodes-loader-label"><span>Loading nodes...</span><strong>${loadedNodeCount ? loadedNodeCount.toLocaleString() : ''}</strong></div><div class="nodes-loader-track"><i></i></div></div>` : deletingNodes ? `<div class="nodes-loader" role="status" aria-live="polite"><div class="nodes-loader-label"><span>Deleting ${selectedNodeIds.size} nodes...</span><strong>Please wait</strong></div><div class="nodes-loader-track"><i></i></div></div>` : ''}</div><div class="toolbar-actions"><label class="node-filter">SHOW <select id="node-filter" ${deletingNodes ? 'disabled' : ''}><option value="infrastructure" ${nodeFilter === 'infrastructure' ? 'selected' : ''}>Nodes only</option><option value="access-points" ${nodeFilter === 'access-points' ? 'selected' : ''}>Access points</option><option value="all" ${nodeFilter === 'all' ? 'selected' : ''}>All nodes</option></select></label>${selectedNodeIds.size ? `<button class="outline-btn delete-selection" id="delete-selection" ${deletingNodes ? 'disabled' : ''}>× <span>${deletingNodes ? 'Deleting...' : `Delete ${selectedNodeIds.size} device${selectedNodeIds.size === 1 ? '' : 's'}`}</span></button>` : ''}${inspectorCollapsed ? '<button class="outline-btn" id="show-inspector" title="Show device details">▤</button>' : ''}<button class="outline-btn" id="fit-map">⊙</button><button class="outline-btn" id="discover-toolbar" title="Discover CDP, LLDP, or MNDP neighbors">⌕ <span>Discover</span></button><button class="outline-btn ${linking ? 'selected-tool' : ''}" id="connect-mode">⌁ <span>${linking ? 'Select target' : 'Connect'}</span></button><button class="primary-btn" id="add-device">＋ <span>Device</span></button></div></div>
         <div class="canvas-wrap" id="canvas-wrap">
           <div class="canvas" id="canvas" style="width:${zoom * 100}%;height:${zoom * 100}%">
             <svg class="links" id="links" aria-hidden="true"></svg>
-            ${nodes.map((node) => renderNode(node)).join('')}
-            <div class="canvas-hint">Scroll to zoom <span>·</span> Hold and drag empty space to pan <span>·</span> Drag corner to resize</div>
+            <div class="selection-marquee" id="selection-marquee" aria-hidden="true"></div>
+            ${displayedNodes.map((node) => renderNode(node)).join('')}
+            <div class="canvas-hint">Drag empty space to select <span>·</span> Middle-drag to pan <span>·</span> Press Delete to remove selected devices</div>
             <div class="canvas-resize-handle" id="canvas-resize-handle" title="Resize canvas area"></div>
           </div>
         </div>
@@ -151,7 +179,8 @@ function renderSiteSwitcher() {
   if (editingWorkspaceName) {
     return `<form class="site-switcher editing" id="workspace-rename-form"><span class="pulse"></span><input id="workspace-name-input" value="${workspaceName.replace(/"/g, '&quot;')}" maxlength="60" autocomplete="off" /><button type="submit" class="workspace-save" title="Save name">✓</button><button type="button" class="workspace-cancel" id="cancel-workspace-rename" title="Cancel">×</button></form>`;
   }
-  return `<div class="site-switcher"><button class="site-switcher-label" id="workspace-menu-toggle"><span class="pulse"></span> ${workspaceName} <span class="caret">⌄</span></button>${workspaceMenuOpen ? `<div class="workspace-menu"><button id="rename-workspace">✎ <span>Rename workspace</span></button><button id="export-workspace">⬇ <span>Export workspace</span></button><button id="import-workspace">⬆ <span>Import workspace</span></button><button id="import-wind">◎ <span>Import Wind nodes</span></button></div>` : ''}<input type="file" id="import-workspace-input" accept="application/json" hidden />${workspaceFeedback ? `<div class="workspace-feedback">${workspaceFeedback}</div>` : ''}</div>`;
+  const feedback = workspaceFeedback ? windImportProgress === null ? workspaceFeedback : `<div class="workspace-progress-label"><span>${workspaceFeedback}</span><strong>${windImportProgress}%</strong></div><div class="workspace-progress"><i style="width:${windImportProgress}%"></i></div>` : '';
+  return `<div class="site-switcher"><button class="site-switcher-label" id="workspace-menu-toggle"><span class="pulse"></span> ${workspaceName} <span class="caret">⌄</span></button>${workspaceMenuOpen ? `<div class="workspace-menu"><button id="rename-workspace">✎ <span>Rename workspace</span></button><button id="export-workspace">⬇ <span>Export workspace</span></button><button id="import-workspace">⬆ <span>Import workspace</span></button><button id="import-wind">◎ <span>Import Wireless Nodes Database</span></button></div>` : ''}<input type="file" id="import-workspace-input" accept="application/json" hidden />${feedback ? `<div class="workspace-feedback">${feedback}</div>` : ''}</div>`;
 }
 
 function renderNode(node) {
@@ -161,12 +190,42 @@ function renderNode(node) {
   const stateClass = node.status === 'offline' && node.pingReachable ? 'ping-ok' : node.status;
   const hasHealth = node.status !== 'offline' && (node.cpu !== undefined || node.memory !== undefined);
   const health = hasHealth ? `<small class="node-health">${node.cpu !== undefined ? `CPU ${node.cpu}%` : ''}${node.cpu !== undefined && node.memory !== undefined ? ' · ' : ''}${node.memory !== undefined ? `MEM ${node.memory}%` : ''}</small>` : '';
-  return `<button class="map-node ${stateClass}" data-id="${node.id}" style="left:${node.x}%;top:${node.y}%"><span class="node-icon ${type.className}">${type.icon}</span><span class="node-copy"><strong>${node.name}</strong><small>${detail}</small>${health}</span><span class="node-state"></span></button>`;
+  return `<button class="map-node ${stateClass} ${selectedNodeIds.has(node.id) ? 'is-selected' : ''}" data-id="${node.id}" style="left:${node.x}%;top:${node.y}%"><span class="node-icon ${type.className}">${type.icon}</span><span class="node-copy"><strong>${node.name}</strong><small>${detail}</small>${health}</span><span class="node-state"></span></button>`;
+}
+
+function updateNodeElements() {
+  const elements = new Map([...document.querySelectorAll('.map-node')].map((element) => [element.dataset.id, element]));
+  nodes.forEach((node) => {
+    const element = elements.get(node.id);
+    if (!element) return;
+    const type = nodeTypes[node.type] || nodeTypes.device;
+    const traffic = `↓ ${node.rx} Mbps  ↑ ${node.tx} Mbps`;
+    const detail = node.status === 'offline' ? (node.pingReachable ? `Ping ${node.pingLatency === null ? 'OK' : `${node.pingLatency} ms`}` : 'SNMP unavailable') : traffic;
+    const stateClass = node.status === 'offline' && node.pingReachable ? 'ping-ok' : node.status;
+    const hasHealth = node.status !== 'offline' && (node.cpu !== undefined || node.memory !== undefined);
+    const health = hasHealth ? `${node.cpu !== undefined ? `CPU ${node.cpu}%` : ''}${node.cpu !== undefined && node.memory !== undefined ? ' · ' : ''}${node.memory !== undefined ? `MEM ${node.memory}%` : ''}` : '';
+    element.className = `map-node ${stateClass} ${selectedNodeIds.has(node.id) ? 'is-selected' : ''}`;
+    element.style.left = `${node.x}%`;
+    element.style.top = `${node.y}%`;
+    const icon = element.querySelector('.node-icon');
+    icon.className = `node-icon ${type.className}`;
+    icon.textContent = type.icon;
+    const copy = element.querySelector('.node-copy');
+    copy.querySelector('strong').textContent = node.name;
+    copy.querySelector('small').textContent = detail;
+    const healthElement = copy.querySelector('.node-health');
+    if (health) {
+      if (healthElement) healthElement.textContent = health;
+      else copy.insertAdjacentHTML('beforeend', `<small class="node-health">${health}</small>`);
+    } else healthElement?.remove();
+  });
 }
 
 function drawLinks() {
   const svg = document.querySelector('#links');
+  const displayedIds = new Set(visibleNodes().map((node) => node.id));
   svg.innerHTML = links.map((link) => {
+    if (!displayedIds.has(link.sourceId) || !displayedIds.has(link.targetId)) return '';
     const from = nodes.find((node) => node.id === link.sourceId);
     const to = nodes.find((node) => node.id === link.targetId);
     if (!from || !to) return '';
@@ -196,9 +255,32 @@ async function startDiscovery(node, protocol) {
   render();
 }
 
+async function createNode(device) {
+  try {
+    const response = await fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(device) });
+    if (!response.ok) throw new Error('Could not save device.');
+    const saved = await response.json();
+    nodes = nodes.map((node) => node.id === device.id ? saved : node);
+    render();
+  } catch (error) {
+    nodes = nodes.filter((node) => node.id !== device.id);
+    selectedId = nodes[0]?.id || '';
+    pingFeedback = error.message;
+    render();
+  }
+}
+
 function bindEvents() {
   bindWorkspaceEvents();
   const canvas = document.querySelector('#canvas');
+  document.querySelector('#node-filter')?.addEventListener('change', (event) => {
+    nodeFilter = event.target.value;
+    selectedNodeIds = new Set([...selectedNodeIds].filter((id) => visibleNodes().some((node) => node.id === id)));
+    render();
+    refreshMetrics();
+  });
+  const deleteSelectionButton = document.querySelector('#delete-selection');
+  if (deleteSelectionButton) deleteSelectionButton.addEventListener('click', deleteSelectedNodes);
   document.querySelector('#links').addEventListener('click', (event) => {
     if (event.target.dataset.linkId) { selectedLinkId = event.target.dataset.linkId; render(); }
   });
@@ -209,10 +291,16 @@ function bindEvents() {
     }
     const nodeElement = event.target.closest('.map-node');
     if (!nodeElement) {
-      if (linking || event.button !== 0) return;
-      const wrap = document.querySelector('#canvas-wrap');
-      panning = { startX: event.clientX, startY: event.clientY, scrollLeft: wrap.scrollLeft, scrollTop: wrap.scrollTop };
-      wrap.style.cursor = 'grabbing';
+      if (linking || (event.button !== 0 && event.button !== 1)) return;
+      if (event.button === 1) {
+        const wrap = document.querySelector('#canvas-wrap');
+        panning = { startX: event.clientX, startY: event.clientY, scrollLeft: wrap.scrollLeft, scrollTop: wrap.scrollTop };
+        wrap.style.cursor = 'grabbing';
+        return;
+      }
+      const bounds = canvas.getBoundingClientRect();
+      selecting = { startX: event.clientX - bounds.left, startY: event.clientY - bounds.top, canvas };
+      canvas.setPointerCapture(event.pointerId);
       return;
     }
     const node = nodes.find((item) => item.id === nodeElement.dataset.id);
@@ -227,6 +315,7 @@ function bindEvents() {
       return;
     }
     selectedId = node.id;
+    selectedNodeIds = new Set([node.id]);
     inspectorCollapsed = false;
     dragging = { id: node.id, startX: event.clientX, startY: event.clientY, x: node.x, y: node.y };
     nodeElement.setPointerCapture(event.pointerId);
@@ -348,6 +437,10 @@ function bindEvents() {
       fetch(`${API_URL}/${node.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ x: node.x, y: node.y }) }).catch(() => {});
     }
     dragging = null;
+    if (selecting) {
+      selecting = null;
+      render();
+    }
     if (panning) document.querySelector('#canvas-wrap').style.cursor = '';
     panning = null;
     if (resizingPanel) {
@@ -369,11 +462,11 @@ function bindEvents() {
     if (!type) return;
     const bounds = canvas.getBoundingClientRect();
     const device = { id: `device-${Date.now()}`, name: `New ${nodeTypes[type].label}`, type, x: ((event.clientX - bounds.left) / bounds.width) * 100, y: ((event.clientY - bounds.top) / bounds.height) * 100, status: 'healthy', ip: '192.168.88.200', uptime: '100%', rx: 0, tx: 0 };
-    nodes.push(device); selectedId = device.id; fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(device) }).catch(() => {}); render();
+    nodes.push(device); selectedId = device.id; render(); createNode(device);
   });
   document.querySelector('#add-device').addEventListener('click', () => {
     const device = { id: `device-${Date.now()}`, name: 'New Device', type: 'device', x: 50, y: 55, status: 'healthy', ip: '192.168.88.200', uptime: '100%', rx: 0, tx: 0 };
-    nodes.push(device); selectedId = device.id; fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(device) }).catch(() => {}); render();
+    nodes.push(device); selectedId = device.id; render(); createNode(device);
   });
   document.querySelector('#fit-map').addEventListener('click', () => { zoom = 1; render(); });
   document.querySelector('#canvas-wrap').addEventListener('wheel', (event) => {
@@ -505,6 +598,29 @@ function moveNode(event) {
     workspace.style.gridTemplateColumns = `${sidebarWidth}px 6px minmax(400px,1fr) 6px ${inspectorWidth}px`;
     return;
   }
+  if (selecting) {
+    const bounds = selecting.canvas.getBoundingClientRect();
+    const currentX = Math.min(Math.max(event.clientX - bounds.left, 0), bounds.width);
+    const currentY = Math.min(Math.max(event.clientY - bounds.top, 0), bounds.height);
+    const left = Math.min(selecting.startX, currentX);
+    const top = Math.min(selecting.startY, currentY);
+    const width = Math.abs(currentX - selecting.startX);
+    const height = Math.abs(currentY - selecting.startY);
+    const marquee = document.querySelector('#selection-marquee');
+    marquee.style.left = `${left}px`;
+    marquee.style.top = `${top}px`;
+    marquee.style.width = `${width}px`;
+    marquee.style.height = `${height}px`;
+    marquee.classList.toggle('visible', width > 3 || height > 3);
+    const marqueeBounds = marquee.getBoundingClientRect();
+    selectedNodeIds = new Set(nodes.filter((node) => {
+      const nodeBounds = document.querySelector(`[data-id="${node.id}"]`).getBoundingClientRect();
+      return nodeBounds.left < marqueeBounds.right && nodeBounds.right > marqueeBounds.left && nodeBounds.top < marqueeBounds.bottom && nodeBounds.bottom > marqueeBounds.top;
+    }).map((node) => node.id));
+    if (selectedNodeIds.size) selectedId = [...selectedNodeIds][0];
+    document.querySelectorAll('.map-node').forEach((node) => node.classList.toggle('is-selected', selectedNodeIds.has(node.dataset.id)));
+    return;
+  }
   if (panning) {
     const wrap = document.querySelector('#canvas-wrap');
     wrap.scrollLeft = panning.scrollLeft - (event.clientX - panning.startX);
@@ -522,6 +638,25 @@ function moveNode(event) {
   drawLinks();
 }
 
+async function deleteSelectedNodes() {
+  if (deletingNodes) return;
+  const ids = [...selectedNodeIds];
+  if (!ids.length || !window.confirm(`Delete ${ids.length} selected device${ids.length === 1 ? '' : 's'}?`)) return;
+  deletingNodes = true;
+  render();
+  try {
+    const results = await Promise.all(ids.map((id) => fetch(`${API_URL}/${id}`, { method: 'DELETE' }).then((response) => ({ id, ok: response.ok })).catch(() => ({ id, ok: false }))));
+    const deletedIds = new Set(results.filter((result) => result.ok).map((result) => result.id));
+    nodes = nodes.filter((node) => !deletedIds.has(node.id));
+    selectedNodeIds = new Set();
+    selectedId = nodes[0]?.id || '';
+    if (deletedIds.size !== ids.length) pingFeedback = `Could not delete ${ids.length - deletedIds.size} selected device${ids.length - deletedIds.size === 1 ? '' : 's'}.`;
+  } finally {
+    deletingNodes = false;
+    render();
+  }
+}
+
 function bindWorkspaceEvents() {
   const menuToggle = document.querySelector('#workspace-menu-toggle');
   if (menuToggle) menuToggle.addEventListener('click', () => { workspaceMenuOpen = !workspaceMenuOpen; render(); });
@@ -535,22 +670,35 @@ function bindWorkspaceEvents() {
   const windImportButton = document.querySelector('#import-wind');
   if (windImportButton) windImportButton.addEventListener('click', async () => {
     workspaceMenuOpen = false;
-    const domain = window.prompt('Wind domain name', 'www.wna.gr/wind');
+    const domain = window.prompt('Wireless Nodes Database domain name', 'www.wna.gr/wind');
     if (!domain?.trim()) { render(); return; }
-    workspaceFeedback = 'Importing Wind nodes...';
+    windImportProgress = 8;
+    workspaceFeedback = 'Connecting to Wind...';
     render();
+    windImportProgressTimer = setInterval(() => {
+      if (windImportProgress < 88) {
+        windImportProgress = Math.min(88, windImportProgress + 8);
+        workspaceFeedback = windImportProgress < 48 ? 'Fetching Wind nodes...' : 'Parsing Wind nodes...';
+        render();
+      }
+    }, 450);
     try {
       const response = await fetch('/api/integrations/wind/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ domain: domain.trim() }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Wind import failed.');
+      clearInterval(windImportProgressTimer);
+      windImportProgress = 100;
       nodes = result.nodes;
+      links = result.links || links;
       selectedId = nodes[0]?.id || '';
-      workspaceFeedback = `Imported ${result.imported} Wind node${result.imported === 1 ? '' : 's'}${result.skipped ? `, skipped ${result.skipped} existing` : ''}.`;
+      workspaceFeedback = `Imported ${result.imported} Wind node${result.imported === 1 ? '' : 's'}${result.skipped ? `, skipped ${result.skipped} existing` : ''}; ${result.linked || 0} links added.`;
     } catch (error) {
+      clearInterval(windImportProgressTimer);
+      windImportProgress = null;
       workspaceFeedback = error.message || 'Could not import Wind nodes.';
     }
     render();
-    setTimeout(() => { workspaceFeedback = ''; render(); }, 5000);
+    setTimeout(() => { workspaceFeedback = ''; windImportProgress = null; render(); }, 5000);
   });
   if (importInput) importInput.addEventListener('change', async (event) => {
     const file = event.target.files[0];
@@ -624,23 +772,39 @@ async function importWorkspace(file) {
 async function refreshMetrics() {
   if (editingSettings || editingLink || refreshInFlight) return;
   refreshInFlight = true;
+  nodesLoading = true;
   try {
-    const metrics = await fetch(API_URL).then((response) => response.ok ? response.json() : Promise.reject());
+    const metrics = await fetch(`${API_URL}?filter=${encodeURIComponent(nodeFilter)}&limit=${MAX_VISIBLE_NODES}`).then((response) => response.ok ? response.json() : Promise.reject());
+    loadedNodeCount = metrics.length;
     const metricsById = new Map(metrics.map((metric) => [metric.id, metric]));
     nodes = nodes.map((node) => ({ ...node, ...metricsById.get(node.id) }));
+    const nodeIds = new Set(nodes.map((node) => node.id));
+    let addedNodes = false;
     metrics.forEach((metric) => {
-      if (!nodes.some((node) => node.id === metric.id)) nodes.push(metric);
+      if (!nodeIds.has(metric.id)) {
+        nodes.push(metric);
+        addedNodes = true;
+      }
     });
     links = await fetch('/api/links').then((response) => response.ok ? response.json() : Promise.reject());
-    render();
+    if (addedNodes) render();
+    else updateNodeElements();
+    drawLinks();
   } catch {
     // The canvas remains usable with its initial sample data while the API is unavailable.
   } finally {
+    nodesLoading = false;
     refreshInFlight = false;
   }
 }
 
 setInterval(refreshMetrics, 1000);
+
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Delete' || event.target.matches('input, select, textarea') || !selectedNodeIds.size) return;
+  event.preventDefault();
+  deleteSelectedNodes();
+});
 
 render();
 loadWorkspaceName();

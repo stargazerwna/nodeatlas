@@ -283,8 +283,33 @@ function poll(node) {
   });
 }
 
-async function getMetrics() {
-  return Promise.all(nodes.map(poll));
+function isClientNode(node) {
+  return node.windType === 'client' || node.type === 'client' || node.kind === 'client';
+}
+
+function isAccessPointNode(node) {
+  return ['ap', 'p2p-ap', 'access-point', 'accesspoint'].includes(String(node.windType || node.kind || node.type).toLowerCase());
+}
+
+async function getMetrics({ filter = 'infrastructure', limit = 5000 } = {}) {
+  const selectedNodes = filter === 'access-points'
+    ? nodes.filter(isAccessPointNode)
+    : filter === 'all'
+      ? nodes
+      : nodes.filter((node) => !isClientNode(node));
+  const polledNodes = selectedNodes.slice(0, Math.max(1, Math.min(5000, Number(limit) || 5000)));
+  const concurrency = Math.max(1, Number(process.env.METRICS_CONCURRENCY || 64));
+  const results = new Array(polledNodes.length);
+  let nextIndex = 0;
+  const worker = async () => {
+    while (true) {
+      const index = nextIndex++;
+      if (index >= polledNodes.length) return;
+      results[index] = await poll(polledNodes[index]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, polledNodes.length) }, worker));
+  return results;
 }
 
 function send(response, status, body) {
@@ -307,10 +332,11 @@ function parseWindNodes(xml, baseUrl) {
   const imported = [];
   for (const match of nodesXml.matchAll(/<(?:selected|node|ap|unlinked|p2p-ap|client)\b([^>]*)\/?\s*>/gi)) {
     const attributes = parseXmlAttributes(match[1]);
+    const windType = match[0].match(/^<([\w-]+)/i)?.[1]?.toLowerCase() || 'node';
     const latitude = Number(String(attributes.lat || '').replace(',', '.'));
     const longitude = Number(String(attributes.lon || '').replace(',', '.'));
     if (!attributes.id || !attributes.name || !Number.isFinite(latitude) || !Number.isFinite(longitude)) continue;
-    imported.push({ id: `wind-${attributes.id}`, name: attributes.name, type: 'device', ip: '', community: 'Public', port: 161, x: longitude, y: latitude, status: 'offline', windId: String(attributes.id), windUrl: attributes.url ? new URL(attributes.url, baseUrl).href : '' });
+    imported.push({ id: `wind-${attributes.id}`, name: attributes.name, type: 'device', windType, ip: '', community: 'Public', port: 161, x: longitude, y: latitude, status: 'offline', windId: String(attributes.id), windUrl: attributes.url ? new URL(attributes.url, baseUrl).href : '' });
   }
   if (!imported.length) return imported;
   const longitudes = imported.map((node) => node.x);
@@ -348,7 +374,10 @@ async function importWindNodes(domain) {
 
 const server = http.createServer(async (request, response) => {
   if (request.method === 'OPTIONS') return send(response, 204, {});
-  if (request.method === 'GET' && request.url === '/api/nodes') return send(response, 200, await getMetrics());
+  if (request.method === 'GET' && request.url && new URL(request.url, `http://${request.headers.host || 'localhost'}`).pathname === '/api/nodes') {
+    const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
+    return send(response, 200, await getMetrics({ filter: url.searchParams.get('filter') || 'infrastructure', limit: Number(url.searchParams.get('limit') || 5000) }));
+  }
   if (request.method === 'GET' && request.url?.startsWith('/api/nodes/') && request.url.endsWith('/interfaces')) {
     const id = request.url.split('/')[3];
     const node = nodes.find((item) => item.id === id);
