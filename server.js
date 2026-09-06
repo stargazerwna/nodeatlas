@@ -250,6 +250,11 @@ function pollHealth(node) {
 
 function poll(node) {
   return new Promise((resolve) => {
+    if (!node.ip?.trim()) {
+      const { community, ...publicNode } = node;
+      resolve({ ...publicNode, status: 'offline', latency: null, rx: 0, tx: 0, error: 'No SNMP address configured.' });
+      return;
+    }
     const session = snmp.createSession(node.ip, node.community || process.env.SNMP_COMMUNITY || 'public', {
       port: Number(node.port || process.env.SNMP_PORT || 161),
       timeout: Number(process.env.SNMP_TIMEOUT || 2000),
@@ -287,6 +292,60 @@ function send(response, status, body) {
   response.end(JSON.stringify(body));
 }
 
+function decodeXml(value) {
+  return value.replace(/&(?:amp|lt|gt|quot|apos);/g, (entity) => ({ '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&apos;': "'" }[entity]));
+}
+
+function parseXmlAttributes(value) {
+  const attributes = {};
+  for (const match of value.matchAll(/([\w:-]+)\s*=\s*["']([^"']*)["']/g)) attributes[match[1]] = decodeXml(match[2]);
+  return attributes;
+}
+
+function parseWindNodes(xml, baseUrl) {
+  const nodesXml = xml.match(/<nodes\b[^>]*>([\s\S]*?)<\/nodes>/i)?.[1] || '';
+  const imported = [];
+  for (const match of nodesXml.matchAll(/<(?:selected|node|ap|unlinked|p2p-ap|client)\b([^>]*)\/?\s*>/gi)) {
+    const attributes = parseXmlAttributes(match[1]);
+    const latitude = Number(String(attributes.lat || '').replace(',', '.'));
+    const longitude = Number(String(attributes.lon || '').replace(',', '.'));
+    if (!attributes.id || !attributes.name || !Number.isFinite(latitude) || !Number.isFinite(longitude)) continue;
+    imported.push({ id: `wind-${attributes.id}`, name: attributes.name, type: 'device', ip: '', community: 'Public', port: 161, x: longitude, y: latitude, status: 'offline', windId: String(attributes.id), windUrl: attributes.url ? new URL(attributes.url, baseUrl).href : '' });
+  }
+  if (!imported.length) return imported;
+  const longitudes = imported.map((node) => node.x);
+  const latitudes = imported.map((node) => node.y);
+  const minLongitude = Math.min(...longitudes);
+  const maxLongitude = Math.max(...longitudes);
+  const minLatitude = Math.min(...latitudes);
+  const maxLatitude = Math.max(...latitudes);
+  return imported.map((node) => ({ ...node, x: maxLongitude === minLongitude ? 50 : 8 + ((node.x - minLongitude) / (maxLongitude - minLongitude)) * 84, y: maxLatitude === minLatitude ? 50 : 8 + ((maxLatitude - node.y) / (maxLatitude - minLatitude)) * 84 }));
+}
+
+function getWindXmlUrl(domain) {
+  const input = /^https?:\/\//i.test(domain) ? domain : `https://${domain}`;
+  const baseUrl = new URL(input);
+  if (!baseUrl.hostname || baseUrl.username || baseUrl.password) throw new Error('Enter a valid Wind domain.');
+  baseUrl.search = '?page=gmap&subpage=xml&show_p2p=1&show_aps=1&show_clients=1&show_unlinked=1';
+  baseUrl.hash = '';
+  return baseUrl;
+}
+
+async function importWindNodes(domain) {
+  const xmlUrl = getWindXmlUrl(domain);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  try {
+    const result = await fetch(xmlUrl, { headers: { Accept: 'application/xml, text/xml' }, signal: controller.signal });
+    if (!result.ok) throw new Error(`Wind returned HTTP ${result.status}.`);
+    const xml = await result.text();
+    if (!/<wind\b/i.test(xml) || !/<nodes\b/i.test(xml)) throw new Error('The Wind domain did not return a node map.');
+    return parseWindNodes(xml, xmlUrl);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 const server = http.createServer(async (request, response) => {
   if (request.method === 'OPTIONS') return send(response, 204, {});
   if (request.method === 'GET' && request.url === '/api/nodes') return send(response, 200, await getMetrics());
@@ -322,6 +381,25 @@ const server = http.createServer(async (request, response) => {
   }
   if (request.method === 'GET' && request.url === '/api/workspace/export') {
     return send(response, 200, { workspace, nodes, links });
+  }
+  if (request.method === 'POST' && request.url === '/api/integrations/wind/import') {
+    let body = '';
+    for await (const chunk of request) body += chunk;
+    let domain;
+    try { domain = JSON.parse(body || '{}').domain?.trim(); } catch { return send(response, 400, { error: 'Invalid Wind import request.' }); }
+    if (!domain) return send(response, 400, { error: 'A Wind domain is required.' });
+    try {
+      const importedNodes = await importWindNodes(domain);
+      if (!importedNodes.length) return send(response, 422, { error: 'No public nodes were found at that Wind domain.' });
+      const existingIds = new Set(nodes.map((node) => node.id));
+      const newNodes = importedNodes.filter((node) => !existingIds.has(node.id));
+      nodes.push(...newNodes);
+      snapshots = new Map();
+      await saveNodes();
+      return send(response, 200, { imported: newNodes.length, skipped: importedNodes.length - newNodes.length, nodes: await getMetrics() });
+    } catch (error) {
+      return send(response, 502, { error: error.name === 'AbortError' ? 'Wind request timed out.' : error.message || 'Wind import failed.' });
+    }
   }
   if (request.method === 'POST' && request.url === '/api/workspace/import') {
     let body = '';

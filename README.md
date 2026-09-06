@@ -20,6 +20,8 @@ Copy `nodes.example.json` to `nodes.local.json`, then set each device's `ip` and
 Copy-Item nodes.example.json nodes.local.json
 ```
 
+To import public nodes from a WiND database, open the workspace menu, choose **Import Wind nodes**, and enter the Wind domain (for example, `www.wna.gr/wind`). The importer reads the public map XML, places nodes using their geographic coordinates, merges duplicates by Wind node ID, defaults their SNMP community to `Public`, and saves them to `nodes.local.json`. WiND's public map does not include SNMP addresses, so imported nodes appear offline until an IP address is configured in the inspector.
+
 The service queries `sysDescr`, `sysUpTime`, and interface receive/transmit byte counters. It also queries UCD-SNMP CPU idle and real-memory counters when a device exposes them. If a device does not support those optional health OIDs, CPU and memory display as unavailable while uptime and traffic continue to work.
 
 No database is needed for a single local site: `nodes.local.json` persists node configuration and IP address edits. Use a database when deploying for multiple users/sites, retaining historical metrics, or needing authentication and audit trails.

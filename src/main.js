@@ -68,7 +68,7 @@ function render() {
   const formValues = settingsDraft?.id === selected.id ? settingsDraft : selected;
   app.innerHTML = `
     <header class="topbar">
-      <a class="brand" href="#"><span class="brand-mark">N</span><span>node<span>atlas</span></span></a>
+      <a class="brand" href="https://wna.gr/nodesatlas" target="_blank" rel="noreferrer"><span class="brand-mark">N</span><span>node<span>atlas</span></span></a>
       ${renderSiteSwitcher()}
       <div class="top-actions"><span class="live"><i></i> LIVE</span><button class="icon-button" title="Notifications">♧<b>2</b></button><button class="avatar" title="Account">SA</button></div>
     </header>
@@ -151,7 +151,7 @@ function renderSiteSwitcher() {
   if (editingWorkspaceName) {
     return `<form class="site-switcher editing" id="workspace-rename-form"><span class="pulse"></span><input id="workspace-name-input" value="${workspaceName.replace(/"/g, '&quot;')}" maxlength="60" autocomplete="off" /><button type="submit" class="workspace-save" title="Save name">✓</button><button type="button" class="workspace-cancel" id="cancel-workspace-rename" title="Cancel">×</button></form>`;
   }
-  return `<div class="site-switcher"><button class="site-switcher-label" id="workspace-menu-toggle"><span class="pulse"></span> ${workspaceName} <span class="caret">⌄</span></button>${workspaceMenuOpen ? `<div class="workspace-menu"><button id="rename-workspace">✎ <span>Rename workspace</span></button><button id="export-workspace">⬇ <span>Export workspace</span></button><button id="import-workspace">⬆ <span>Import workspace</span></button></div>` : ''}<input type="file" id="import-workspace-input" accept="application/json" hidden />${workspaceFeedback ? `<div class="workspace-feedback">${workspaceFeedback}</div>` : ''}</div>`;
+  return `<div class="site-switcher"><button class="site-switcher-label" id="workspace-menu-toggle"><span class="pulse"></span> ${workspaceName} <span class="caret">⌄</span></button>${workspaceMenuOpen ? `<div class="workspace-menu"><button id="rename-workspace">✎ <span>Rename workspace</span></button><button id="export-workspace">⬇ <span>Export workspace</span></button><button id="import-workspace">⬆ <span>Import workspace</span></button><button id="import-wind">◎ <span>Import Wind nodes</span></button></div>` : ''}<input type="file" id="import-workspace-input" accept="application/json" hidden />${workspaceFeedback ? `<div class="workspace-feedback">${workspaceFeedback}</div>` : ''}</div>`;
 }
 
 function renderNode(node) {
@@ -532,6 +532,26 @@ function bindWorkspaceEvents() {
   const importButton = document.querySelector('#import-workspace');
   const importInput = document.querySelector('#import-workspace-input');
   if (importButton && importInput) importButton.addEventListener('click', () => { workspaceMenuOpen = false; render(); document.querySelector('#import-workspace-input').click(); });
+  const windImportButton = document.querySelector('#import-wind');
+  if (windImportButton) windImportButton.addEventListener('click', async () => {
+    workspaceMenuOpen = false;
+    const domain = window.prompt('Wind domain name', 'www.wna.gr/wind');
+    if (!domain?.trim()) { render(); return; }
+    workspaceFeedback = 'Importing Wind nodes...';
+    render();
+    try {
+      const response = await fetch('/api/integrations/wind/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ domain: domain.trim() }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Wind import failed.');
+      nodes = result.nodes;
+      selectedId = nodes[0]?.id || '';
+      workspaceFeedback = `Imported ${result.imported} Wind node${result.imported === 1 ? '' : 's'}${result.skipped ? `, skipped ${result.skipped} existing` : ''}.`;
+    } catch (error) {
+      workspaceFeedback = error.message || 'Could not import Wind nodes.';
+    }
+    render();
+    setTimeout(() => { workspaceFeedback = ''; render(); }, 5000);
+  });
   if (importInput) importInput.addEventListener('change', async (event) => {
     const file = event.target.files[0];
     if (file) await importWorkspace(file);
