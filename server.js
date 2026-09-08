@@ -34,6 +34,25 @@ const MIKROTIK_CPU_OID = '1.3.6.1.2.1.25.3.3.1.2'; // hrProcessorLoad
 const MIKROTIK_STORAGE_DESCR_OID = '1.3.6.1.2.1.25.2.3.1.3'; // hrStorageDescr
 const MIKROTIK_STORAGE_SIZE_OID = '1.3.6.1.2.1.25.2.3.1.5'; // hrStorageSize
 const MIKROTIK_STORAGE_USED_OID = '1.3.6.1.2.1.25.2.3.1.6'; // hrStorageUsed
+const SNMP_SECURITY_LEVELS = Object.freeze({
+  noAuthNoPriv: snmp.SecurityLevel.noAuthNoPriv,
+  authNoPriv: snmp.SecurityLevel.authNoPriv,
+  authPriv: snmp.SecurityLevel.authPriv,
+});
+const SNMP_AUTH_PROTOCOLS = Object.freeze({
+  md5: snmp.AuthProtocols.md5,
+  sha: snmp.AuthProtocols.sha,
+  sha224: snmp.AuthProtocols.sha224,
+  sha256: snmp.AuthProtocols.sha256,
+  sha384: snmp.AuthProtocols.sha384,
+  sha512: snmp.AuthProtocols.sha512,
+});
+const SNMP_PRIV_PROTOCOLS = Object.freeze({
+  des: snmp.PrivProtocols.des,
+  aes: snmp.PrivProtocols.aes,
+  aes256b: snmp.PrivProtocols.aes256b,
+  aes256r: snmp.PrivProtocols.aes256r,
+});
 
 let nodes = await loadNodes();
 let snapshots = new Map();
@@ -42,17 +61,43 @@ let workspace = await loadWorkspace();
 const execFileAsync = promisify(execFile);
 
 async function loadNodes() {
-  const path = existsSync(CONFIG_PATH) ? CONFIG_PATH : SAMPLE_CONFIG_PATH;
-  return JSON.parse(await readFile(path, 'utf8'));
+  if (hasLocalNodeConfig()) return JSON.parse(await readFile(CONFIG_PATH, 'utf8'));
+  if (hasLocalSavedWorkspace()) return [];
+  return JSON.parse(await readFile(SAMPLE_CONFIG_PATH, 'utf8'));
 }
 
 async function loadLinks() {
-  if (existsSync(LINKS_PATH)) return JSON.parse(await readFile(LINKS_PATH, 'utf8'));
+  if (hasLocalLinksConfig()) return JSON.parse(await readFile(LINKS_PATH, 'utf8'));
+  if (hasLocalSavedWorkspace()) return [];
   return existsSync(SAMPLE_LINKS_PATH) ? JSON.parse(await readFile(SAMPLE_LINKS_PATH, 'utf8')) : [];
 }
 
 async function loadWorkspace() {
   return existsSync(WORKSPACE_PATH) ? JSON.parse(await readFile(WORKSPACE_PATH, 'utf8')) : { name: 'myWorkspace' };
+}
+
+function hasLocalNodeConfig() {
+  return existsSync(CONFIG_PATH);
+}
+
+function hasLocalLinksConfig() {
+  return existsSync(LINKS_PATH);
+}
+
+function hasLocalWorkspaceConfig() {
+  return existsSync(WORKSPACE_PATH);
+}
+
+function hasLocalSavedWorkspace() {
+  return hasLocalNodeConfig() || hasLocalLinksConfig() || hasLocalWorkspaceConfig();
+}
+
+function getWorkspaceResponse() {
+  const hasLocalNodes = hasLocalNodeConfig();
+  const hasLocalLinks = hasLocalLinksConfig();
+  const hasLocalWorkspace = hasLocalWorkspaceConfig();
+  const hasLocalConfig = hasLocalNodes || hasLocalLinks || hasLocalWorkspace;
+  return { ...workspace, hasLocalConfig, hasLocalNodes, hasLocalLinks, hasLocalWorkspace, hasLocalSavedWorkspace: hasLocalConfig, usingDemoWorkspace: !hasLocalConfig };
 }
 
 function formatUptime(ticks) {
@@ -86,9 +131,103 @@ function getInterfaceOid(index, direction) {
   return `1.3.6.1.2.1.2.2.1.${direction === 'rx' ? 10 : 16}.${index}`;
 }
 
+function hasOwn(object, key) {
+  return Object.prototype.hasOwnProperty.call(object, key);
+}
+
+function normalizeSnmpVersion(version) {
+  const value = String(version || '2c').trim().toLowerCase();
+  if (['2', '2c', 'v2c', 'snmpv2c'].includes(value)) return '2c';
+  if (['3', 'v3', 'snmpv3'].includes(value)) return '3';
+  return '';
+}
+
+function getSnmpVersion(node) {
+  return normalizeSnmpVersion(node.snmpVersion) || '2c';
+}
+
+function getEffectiveCommunity(node) {
+  return node.community || process.env.SNMP_COMMUNITY || 'public';
+}
+
+function getSnmpSecurityLevel(node) {
+  return hasOwn(SNMP_SECURITY_LEVELS, node.securityLevel) ? node.securityLevel : 'authPriv';
+}
+
+function getSnmpAuthProtocol(node) {
+  return hasOwn(SNMP_AUTH_PROTOCOLS, node.authProtocol) ? node.authProtocol : 'sha';
+}
+
+function getSnmpPrivProtocol(node) {
+  return hasOwn(SNMP_PRIV_PROTOCOLS, node.privProtocol) ? node.privProtocol : 'aes';
+}
+
+function normalizeSnmpNodeConfig(node) {
+  const normalized = { ...node, snmpVersion: getSnmpVersion(node) };
+  ['community', 'snmpUser', 'securityLevel', 'authProtocol', 'authKey', 'privProtocol', 'privKey', 'context'].forEach((key) => {
+    if (typeof normalized[key] === 'string') normalized[key] = normalized[key].trim();
+  });
+  if (!hasOwn(SNMP_SECURITY_LEVELS, normalized.securityLevel)) normalized.securityLevel = getSnmpSecurityLevel(normalized);
+  if (!hasOwn(SNMP_AUTH_PROTOCOLS, normalized.authProtocol)) normalized.authProtocol = getSnmpAuthProtocol(normalized);
+  if (!hasOwn(SNMP_PRIV_PROTOCOLS, normalized.privProtocol)) normalized.privProtocol = getSnmpPrivProtocol(normalized);
+  return normalized;
+}
+
+function validateSnmpNodeConfig(node) {
+  if (!normalizeSnmpVersion(node.snmpVersion)) return 'SNMP version must be v2c or v3.';
+  if (getSnmpVersion(node) !== '3') return '';
+  const securityLevel = getSnmpSecurityLevel(node);
+  if (!hasOwn(SNMP_SECURITY_LEVELS, securityLevel)) return 'SNMPv3 security level is not supported.';
+  if (!String(node.snmpUser || process.env.SNMPV3_USER || '').trim()) return 'SNMPv3 user is required.';
+  if ((securityLevel === 'authNoPriv' || securityLevel === 'authPriv') && !String(node.authKey || process.env.SNMPV3_AUTH_KEY || '').trim()) return 'SNMPv3 authentication password is required.';
+  if (securityLevel === 'authPriv' && !String(node.privKey || process.env.SNMPV3_PRIV_KEY || '').trim()) return 'SNMPv3 encryption password is required.';
+  return '';
+}
+
+function getNodeResponse(node) {
+  return normalizeSnmpNodeConfig({ ...node, community: getEffectiveCommunity(node) });
+}
+
+function createSnmpSession(node, options = {}) {
+  const retries = options.retries === undefined ? Number(process.env.SNMP_RETRIES || 1) : options.retries;
+  const sessionOptions = {
+    port: Number(node.port || process.env.SNMP_PORT || 161),
+    timeout: Number(process.env.SNMP_TIMEOUT || 2000),
+    retries,
+  };
+
+  if (getSnmpVersion(node) !== '3') {
+    return snmp.createSession(node.ip, getEffectiveCommunity(node), { ...sessionOptions, version: snmp.Version2c });
+  }
+
+  const securityLevel = getSnmpSecurityLevel(node);
+  const user = {
+    name: node.snmpUser || process.env.SNMPV3_USER || '',
+    level: SNMP_SECURITY_LEVELS[securityLevel],
+  };
+
+  if (securityLevel === 'authNoPriv' || securityLevel === 'authPriv') {
+    user.authProtocol = SNMP_AUTH_PROTOCOLS[getSnmpAuthProtocol(node)];
+    user.authKey = node.authKey || process.env.SNMPV3_AUTH_KEY || '';
+  }
+  if (securityLevel === 'authPriv') {
+    user.privProtocol = SNMP_PRIV_PROTOCOLS[getSnmpPrivProtocol(node)];
+    user.privKey = node.privKey || process.env.SNMPV3_PRIV_KEY || '';
+  }
+
+  const context = node.context || process.env.SNMPV3_CONTEXT || '';
+  return snmp.createV3Session(node.ip, user, { ...sessionOptions, version: snmp.Version3, context });
+}
+
 function getInterfaces(node) {
   return new Promise((resolve) => {
-    const session = snmp.createSession(node.ip, node.community || process.env.SNMP_COMMUNITY || 'public', { port: Number(node.port || 161), timeout: Number(process.env.SNMP_TIMEOUT || 2000), retries: Number(process.env.SNMP_RETRIES || 1), version: snmp.Version2c });
+    let session;
+    try {
+      session = createSnmpSession(node);
+    } catch {
+      resolve([]);
+      return;
+    }
     const interfaces = [];
     session.subtree('1.3.6.1.2.1.2.2.1.2', 20, (varbinds) => {
       interfaces.push(...varbinds.filter((varbind) => !snmp.isVarbindError(varbind)).map((varbind) => ({ index: Number(varbind.oid.split('.').pop()), name: String(varbind.value) })));
@@ -102,7 +241,13 @@ function getInterfaces(node) {
 
 function walkSnmp(node, oid) {
   return new Promise((resolve) => {
-    const session = snmp.createSession(node.ip, node.community || process.env.SNMP_COMMUNITY || 'public', { port: Number(node.port || 161), timeout: Number(process.env.SNMP_TIMEOUT || 2000), retries: 0, version: snmp.Version2c });
+    let session;
+    try {
+      session = createSnmpSession(node, { retries: 0 });
+    } catch {
+      resolve([]);
+      return;
+    }
     const varbinds = [];
     session.subtree(oid, 20, (items) => {
       varbinds.push(...items.filter((item) => !snmp.isVarbindError(item)));
@@ -202,9 +347,15 @@ async function discoverNeighbors(node, protocol) {
 
 function pollLink(link) {
   const source = nodes.find((node) => node.id === link.sourceId);
-  if (!source) return Promise.resolve({ ...link, status: 'offline', rx: 0, tx: 0 });
+  if (!source || !source.ip?.trim()) return Promise.resolve({ ...link, status: 'offline', rx: 0, tx: 0 });
   return new Promise((resolve) => {
-    const session = snmp.createSession(source.ip, source.community || process.env.SNMP_COMMUNITY || 'public', { port: Number(source.port || 161), timeout: Number(process.env.SNMP_TIMEOUT || 2000), retries: Number(process.env.SNMP_RETRIES || 1), version: snmp.Version2c });
+    let session;
+    try {
+      session = createSnmpSession(source);
+    } catch {
+      resolve({ ...link, status: 'offline', rx: 0, tx: 0 });
+      return;
+    }
     session.get([getInterfaceOid(link.interfaceIndex, 'rx'), getInterfaceOid(link.interfaceIndex, 'tx')], (error, varbinds) => {
       session.close();
       if (error || varbinds.some(snmp.isVarbindError)) return resolve({ ...link, status: 'offline', rx: 0, tx: 0 });
@@ -238,7 +389,13 @@ async function pollMikrotikHealth(node) {
 function pollHealth(node) {
   if (node.platform === 'mikrotik') return pollMikrotikHealth(node).catch(() => ({}));
   return new Promise((resolve) => {
-    const session = snmp.createSession(node.ip, node.community || process.env.SNMP_COMMUNITY || 'public', { port: Number(node.port || 161), timeout: Number(process.env.SNMP_TIMEOUT || 2000), retries: 0, version: snmp.Version2c });
+    let session;
+    try {
+      session = createSnmpSession(node, { retries: 0 });
+    } catch {
+      resolve({});
+      return;
+    }
     session.get(HEALTH_OIDS, (error, varbinds) => {
       session.close();
       if (error || varbinds.some(snmp.isVarbindError)) return resolve({});
@@ -251,22 +408,21 @@ function pollHealth(node) {
 function poll(node) {
   return new Promise((resolve) => {
     if (!node.ip?.trim()) {
-      const { community, ...publicNode } = node;
-      resolve({ ...publicNode, status: 'offline', latency: null, rx: 0, tx: 0, error: 'No SNMP address configured.' });
+      resolve({ ...getNodeResponse(node), status: 'offline', latency: null, rx: 0, tx: 0, error: 'No SNMP address configured.' });
       return;
     }
-    const session = snmp.createSession(node.ip, node.community || process.env.SNMP_COMMUNITY || 'public', {
-      port: Number(node.port || process.env.SNMP_PORT || 161),
-      timeout: Number(process.env.SNMP_TIMEOUT || 2000),
-      retries: Number(process.env.SNMP_RETRIES || 1),
-      version: snmp.Version2c,
-    });
+    let session;
+    try {
+      session = createSnmpSession(node);
+    } catch (error) {
+      resolve({ ...getNodeResponse(node), status: 'offline', latency: null, rx: 0, tx: 0, error: error?.message || 'SNMP session could not be created' });
+      return;
+    }
     const startedAt = Date.now();
     session.get(OIDS, (error, varbinds) => {
       session.close();
       if (error || varbinds.some(snmp.isVarbindError)) {
-        const { community, ...publicNode } = node;
-        resolve({ ...publicNode, status: 'offline', latency: null, rx: 0, tx: 0, error: error?.message || 'SNMP request failed' });
+        resolve({ ...getNodeResponse(node), status: 'offline', latency: null, rx: 0, tx: 0, error: error?.message || 'SNMP request failed' });
         return;
       }
       const [description, systemName, ticks, inOctets, outOctets] = varbinds.map((varbind) => varbind.value);
@@ -276,40 +432,14 @@ function poll(node) {
       const rx = elapsedSeconds ? Math.max(0, (Number(inOctets) - previous.inOctets) * 8 / elapsedSeconds / 1_000_000) : 0;
       const tx = elapsedSeconds ? Math.max(0, (Number(outOctets) - previous.outOctets) * 8 / elapsedSeconds / 1_000_000) : 0;
       snapshots.set(node.id, { at: now, inOctets: Number(inOctets), outOctets: Number(outOctets) });
-      const { community, ...publicNode } = node;
       const systemDescription = String(description);
-      pollHealth(node).then((health) => resolve({ ...publicNode, ...health, status: 'healthy', latency: Date.now() - startedAt, rx: +rx.toFixed(2), tx: +tx.toFixed(2), systemName: String(systemName), description: systemDescription, platformVersion: getPlatformVersion(systemDescription), uptime: formatUptime(Number(ticks)), uptimeTicks: Number(ticks) }));
+      pollHealth(node).then((health) => resolve({ ...getNodeResponse(node), ...health, status: 'healthy', latency: Date.now() - startedAt, rx: +rx.toFixed(2), tx: +tx.toFixed(2), systemName: String(systemName), description: systemDescription, platformVersion: getPlatformVersion(systemDescription), uptime: formatUptime(Number(ticks)), uptimeTicks: Number(ticks) }));
     });
   });
 }
 
-function isClientNode(node) {
-  return node.windType === 'client' || node.type === 'client' || node.kind === 'client';
-}
-
-function isAccessPointNode(node) {
-  return ['ap', 'p2p-ap', 'access-point', 'accesspoint'].includes(String(node.windType || node.kind || node.type).toLowerCase());
-}
-
-async function getMetrics({ filter = 'infrastructure', limit = 5000 } = {}) {
-  const selectedNodes = filter === 'access-points'
-    ? nodes.filter(isAccessPointNode)
-    : filter === 'all'
-      ? nodes
-      : nodes.filter((node) => !isClientNode(node));
-  const polledNodes = selectedNodes.slice(0, Math.max(1, Math.min(5000, Number(limit) || 5000)));
-  const concurrency = Math.max(1, Number(process.env.METRICS_CONCURRENCY || 64));
-  const results = new Array(polledNodes.length);
-  let nextIndex = 0;
-  const worker = async () => {
-    while (true) {
-      const index = nextIndex++;
-      if (index >= polledNodes.length) return;
-      results[index] = await poll(polledNodes[index]);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(concurrency, polledNodes.length) }, worker));
-  return results;
+async function getMetrics() {
+  return Promise.all(nodes.map(poll));
 }
 
 function send(response, status, body) {
@@ -332,27 +462,63 @@ function parseWindNodes(xml, baseUrl) {
   const imported = [];
   for (const match of nodesXml.matchAll(/<(?:selected|node|ap|unlinked|p2p-ap|client)\b([^>]*)\/?\s*>/gi)) {
     const attributes = parseXmlAttributes(match[1]);
-    const windType = match[0].match(/^<([\w-]+)/i)?.[1]?.toLowerCase() || 'node';
     const latitude = Number(String(attributes.lat || '').replace(',', '.'));
     const longitude = Number(String(attributes.lon || '').replace(',', '.'));
     if (!attributes.id || !attributes.name || !Number.isFinite(latitude) || !Number.isFinite(longitude)) continue;
-    imported.push({ id: `wind-${attributes.id}`, name: attributes.name, type: 'device', windType, ip: '', community: 'Public', port: 161, x: longitude, y: latitude, status: 'offline', windId: String(attributes.id), windUrl: attributes.url ? new URL(attributes.url, baseUrl).href : '' });
+    imported.push({ id: `wind-${attributes.id}`, name: attributes.name, type: 'device', ip: '', community: 'Public', port: 161, latitude, longitude, x: longitude, y: latitude, status: 'offline', windId: String(attributes.id), windUrl: attributes.url ? new URL(attributes.url, baseUrl).href : '' });
   }
-  if (!imported.length) return imported;
+  if (!imported.length) return { nodes: [], links: [] };
   const longitudes = imported.map((node) => node.x);
   const latitudes = imported.map((node) => node.y);
   const minLongitude = Math.min(...longitudes);
   const maxLongitude = Math.max(...longitudes);
   const minLatitude = Math.min(...latitudes);
   const maxLatitude = Math.max(...latitudes);
-  return imported.map((node) => ({ ...node, x: maxLongitude === minLongitude ? 50 : 8 + ((node.x - minLongitude) / (maxLongitude - minLongitude)) * 84, y: maxLatitude === minLatitude ? 50 : 8 + ((maxLatitude - node.y) / (maxLatitude - minLatitude)) * 84 }));
+  const nodes = imported.map((node) => ({ ...node, x: maxLongitude === minLongitude ? 50 : 8 + ((node.x - minLongitude) / (maxLongitude - minLongitude)) * 84, y: maxLatitude === minLatitude ? 50 : 8 + ((maxLatitude - node.y) / (maxLatitude - minLatitude)) * 84 }));
+  const linksXml = xml.match(/<links\b[^>]*>([\s\S]*?)(?:<\/links>|$)/i)?.[1] || '';
+  const byCoordinate = (latitude, longitude) => nodes.reduce((closest, node) => {
+    const distance = (node.latitude - latitude) ** 2 + (node.longitude - longitude) ** 2;
+    return !closest || distance < closest.distance ? { node, distance } : closest;
+  }, null);
+  const links = [];
+  for (const match of linksXml.matchAll(/<link_(p2p|client)\b([\s\S]*?)(?=<link_|$)/gi)) {
+    const attributes = parseXmlAttributes(match[2]);
+    const latitude1 = Number(String(attributes.lat1 || '').replace(',', '.'));
+    const longitude1 = Number(String(attributes.lon1 || '').replace(',', '.'));
+    const latitude2 = Number(String(attributes.lat2 || '').replace(',', '.'));
+    const longitude2 = Number(String(attributes.lon2 || '').replace(',', '.'));
+    if (!attributes.id || ![latitude1, longitude1, latitude2, longitude2].every(Number.isFinite)) continue;
+    const source = byCoordinate(latitude1, longitude1);
+    const target = byCoordinate(latitude2, longitude2);
+    if (!source || !target || source.distance > 0.000001 || target.distance > 0.000001 || source.node.id === target.node.id) continue;
+    links.push({ id: `wind-link-${attributes.id}`, sourceId: source.node.id, targetId: target.node.id, interfaceIndex: 1, interfaceIp: '', windId: String(attributes.id), protocol: match[1].toUpperCase() });
+  }
+  return { nodes, links };
+}
+
+function spreadWindNodes(importedNodes, existingNodes) {
+  const occupied = existingNodes.map((node) => ({ x: Number(node.x || 50), y: Number(node.y || 50) }));
+  return importedNodes.map((node) => {
+    let x = node.x;
+    let y = node.y;
+    let attempt = 0;
+    while (occupied.some((position) => Math.abs(position.x - x) < 7 && Math.abs(position.y - y) < 7) && attempt < 40) {
+      const angle = attempt * 0.9;
+      const radius = 8 + Math.floor(attempt / 8) * 5;
+      x = Math.min(94, Math.max(6, node.x + Math.cos(angle) * radius));
+      y = Math.min(91, Math.max(6, node.y + Math.sin(angle) * radius));
+      attempt += 1;
+    }
+    occupied.push({ x, y });
+    return { ...node, x, y };
+  });
 }
 
 function getWindXmlUrl(domain) {
   const input = /^https?:\/\//i.test(domain) ? domain : `https://${domain}`;
   const baseUrl = new URL(input);
   if (!baseUrl.hostname || baseUrl.username || baseUrl.password) throw new Error('Enter a valid Wind domain.');
-  baseUrl.search = '?page=gmap&subpage=xml&show_p2p=1&show_aps=1&show_clients=1&show_unlinked=1';
+  baseUrl.search = '?page=gmap&subpage=xml&show_p2p=1&show_aps=1&show_clients=1&show_unlinked=1&show_links_p2p=1&show_links_client=1&show_links_vpn=1';
   baseUrl.hash = '';
   return baseUrl;
 }
@@ -374,10 +540,7 @@ async function importWindNodes(domain) {
 
 const server = http.createServer(async (request, response) => {
   if (request.method === 'OPTIONS') return send(response, 204, {});
-  if (request.method === 'GET' && request.url && new URL(request.url, `http://${request.headers.host || 'localhost'}`).pathname === '/api/nodes') {
-    const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
-    return send(response, 200, await getMetrics({ filter: url.searchParams.get('filter') || 'infrastructure', limit: Number(url.searchParams.get('limit') || 5000) }));
-  }
+  if (request.method === 'GET' && request.url === '/api/nodes') return send(response, 200, await getMetrics());
   if (request.method === 'GET' && request.url?.startsWith('/api/nodes/') && request.url.endsWith('/interfaces')) {
     const id = request.url.split('/')[3];
     const node = nodes.find((item) => item.id === id);
@@ -398,7 +561,7 @@ const server = http.createServer(async (request, response) => {
     }
   }
   if (request.method === 'GET' && request.url === '/api/links') return send(response, 200, await Promise.all(links.map(pollLink)));
-  if (request.method === 'GET' && request.url === '/api/workspace') return send(response, 200, workspace);
+  if (request.method === 'GET' && request.url === '/api/workspace') return send(response, 200, getWorkspaceResponse());
   if (request.method === 'PUT' && request.url === '/api/workspace') {
     let body = '';
     for await (const chunk of request) body += chunk;
@@ -406,7 +569,7 @@ const server = http.createServer(async (request, response) => {
     if (typeof name !== 'string' || !name.trim()) return send(response, 400, { error: 'A workspace name is required.' });
     workspace = { ...workspace, name: name.trim() };
     await saveWorkspace();
-    return send(response, 200, workspace);
+    return send(response, 200, getWorkspaceResponse());
   }
   if (request.method === 'GET' && request.url === '/api/workspace/export') {
     return send(response, 200, { workspace, nodes, links });
@@ -418,14 +581,19 @@ const server = http.createServer(async (request, response) => {
     try { domain = JSON.parse(body || '{}').domain?.trim(); } catch { return send(response, 400, { error: 'Invalid Wind import request.' }); }
     if (!domain) return send(response, 400, { error: 'A Wind domain is required.' });
     try {
-      const importedNodes = await importWindNodes(domain);
-      if (!importedNodes.length) return send(response, 422, { error: 'No public nodes were found at that Wind domain.' });
+      const imported = await importWindNodes(domain);
+      if (!imported.nodes.length) return send(response, 422, { error: 'No public nodes were found at that Wind domain.' });
       const existingIds = new Set(nodes.map((node) => node.id));
-      const newNodes = importedNodes.filter((node) => !existingIds.has(node.id));
+      const newNodes = spreadWindNodes(imported.nodes.filter((node) => !existingIds.has(node.id)), nodes);
       nodes.push(...newNodes);
+      const existingLinkIds = new Set(links.map((link) => link.id));
+      const newLinks = imported.links.filter((link) => !existingLinkIds.has(link.id) && nodes.some((node) => node.id === link.sourceId) && nodes.some((node) => node.id === link.targetId));
+      links.push(...newLinks);
       snapshots = new Map();
-      await saveNodes();
-      return send(response, 200, { imported: newNodes.length, skipped: importedNodes.length - newNodes.length, nodes: await getMetrics() });
+      await Promise.all([saveNodes(), saveLinks()]);
+      const newNodeIds = new Set(newNodes.map((node) => node.id));
+      const monitoredNewNodes = (await getMetrics()).filter((node) => newNodeIds.has(node.id));
+      return send(response, 200, { imported: newNodes.length, skipped: imported.nodes.length - newNodes.length, linked: newLinks.length, newNodes: monitoredNewNodes, newLinks: await Promise.all(newLinks.map(pollLink)) });
     } catch (error) {
       return send(response, 502, { error: error.name === 'AbortError' ? 'Wind request timed out.' : error.message || 'Wind import failed.' });
     }
@@ -449,7 +617,7 @@ const server = http.createServer(async (request, response) => {
     workspace = { ...workspace, name: importedName };
     snapshots = new Map();
     await Promise.all([saveNodes(), saveLinks(), saveWorkspace()]);
-    return send(response, 200, { workspace, nodes: await getMetrics(), links: await Promise.all(links.map(pollLink)) });
+    return send(response, 200, { workspace: getWorkspaceResponse(), nodes: await getMetrics(), links: await Promise.all(links.map(pollLink)) });
   }
   if (request.method === 'POST' && request.url?.startsWith('/api/nodes/') && request.url.endsWith('/ping')) {
     const id = request.url.split('/')[3];
@@ -470,8 +638,7 @@ const server = http.createServer(async (request, response) => {
     const copy = { ...source, id: `${source.id}-copy-${Date.now()}`, name: `${source.name} copy`, x: Math.min(94, (source.x || 50) + 4), y: Math.min(91, (source.y || 50) + 4) };
     nodes.push(copy);
     await saveNodes();
-    const { community, ...publicNode } = copy;
-    return send(response, 201, publicNode);
+    return send(response, 201, getNodeResponse(copy));
   }
   if (request.method === 'POST' && request.url === '/api/links') {
     let body = '';
@@ -498,41 +665,51 @@ const server = http.createServer(async (request, response) => {
   if (request.method === 'POST' && request.url === '/api/nodes') {
     let body = '';
     for await (const chunk of request) body += chunk;
-    const node = JSON.parse(body || '{}');
+    const node = normalizeSnmpNodeConfig(JSON.parse(body || '{}'));
     if (!node.id || !node.name || !node.type || !node.ip) return send(response, 400, { error: 'id, name, type, and ip are required.' });
+    const snmpError = validateSnmpNodeConfig(node);
+    if (snmpError) return send(response, 400, { error: snmpError });
     if (nodes.some((item) => item.id === node.id)) return send(response, 409, { error: 'Node already exists.' });
     nodes.push(node);
     await saveNodes();
-    return send(response, 201, node);
+    return send(response, 201, getNodeResponse(node));
   }
   if (request.method === 'PUT' && request.url?.startsWith('/api/nodes/')) {
     const id = request.url.split('/').pop();
     let body = '';
     for await (const chunk of request) body += chunk;
-    const { name, ip, type, platform, port, community, x, y } = JSON.parse(body || '{}');
+    const payload = JSON.parse(body || '{}');
+    const { name, ip, type, platform, port, x, y } = payload;
     let node = nodes.find((item) => item.id === id);
     const hasPosition = Number.isFinite(Number(x)) && Number.isFinite(Number(y));
     if (!node && (!name || !ip)) return send(response, 400, { error: 'A node name and non-empty IP address are required.' });
     if (!hasPosition && (typeof name !== 'string' || !name.trim() || typeof ip !== 'string' || !ip.trim())) return send(response, 400, { error: 'A node name and non-empty IP address are required.' });
     if (port !== undefined && (!Number.isInteger(Number(port)) || Number(port) < 1 || Number(port) > 65535)) return send(response, 400, { error: 'SNMP port must be between 1 and 65535.' });
-    if (!node) {
-      node = { id, name: name.trim(), type: type || 'device', ip: ip.trim(), port: Number(port || 161) };
-      nodes.push(node);
-    }
-    if (name) node.name = name.trim();
-    if (ip) node.ip = ip.trim();
-    if (typeof type === 'string' && ['router', 'gateway', 'server', 'camera', 'device'].includes(type)) node.type = type;
-    if (typeof platform === 'string' && ['mikrotik', 'openwrt', 'other'].includes(platform)) node.platform = platform;
-    if (port !== undefined) node.port = Number(port);
-    if (typeof community === 'string' && community.trim()) node.community = community.trim();
+    const nextNode = node ? { ...node } : { id, name: name.trim(), type: type || 'device', ip: ip.trim(), port: Number(port || 161) };
+    if (name) nextNode.name = name.trim();
+    if (ip) nextNode.ip = ip.trim();
+    if (typeof type === 'string' && ['router', 'gateway', 'server', 'camera', 'device'].includes(type)) nextNode.type = type;
+    if (typeof platform === 'string' && ['mikrotik', 'openwrt', 'other'].includes(platform)) nextNode.platform = platform;
+    if (port !== undefined) nextNode.port = Number(port);
+    ['snmpVersion', 'community', 'snmpUser', 'securityLevel', 'authProtocol', 'authKey', 'privProtocol', 'privKey', 'context'].forEach((key) => {
+      if (hasOwn(payload, key)) nextNode[key] = payload[key];
+    });
     if (hasPosition) {
-      node.x = Math.min(94, Math.max(6, Number(x)));
-      node.y = Math.min(91, Math.max(6, Number(y)));
+      nextNode.x = Math.min(94, Math.max(6, Number(x)));
+      nextNode.y = Math.min(91, Math.max(6, Number(y)));
+    }
+    const normalizedNode = normalizeSnmpNodeConfig(nextNode);
+    const snmpError = !hasPosition ? validateSnmpNodeConfig(normalizedNode) : '';
+    if (snmpError) return send(response, 400, { error: snmpError });
+    if (node) {
+      Object.assign(node, normalizedNode);
+    } else {
+      node = normalizedNode;
+      nodes.push(node);
     }
     snapshots.delete(id);
     await saveNodes();
-    const { community: savedCommunity, ...publicNode } = node;
-    return send(response, 200, publicNode);
+    return send(response, 200, getNodeResponse(node));
   }
   if (request.method === 'DELETE' && request.url?.startsWith('/api/nodes/')) {
     const id = request.url.split('/').pop();
